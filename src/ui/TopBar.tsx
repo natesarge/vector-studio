@@ -27,6 +27,10 @@ interface Props {
   onOpenFile: (file: File) => void;
   onExport: () => void;
   onSaveProject: () => void;
+  compare: boolean;
+  compareLocked: boolean;
+  onCompareHold: (on: boolean) => void;
+  onCompareToggle: () => void;
 }
 
 /** The strip across the top: app name, Open, view modes, toggles and Export. */
@@ -85,6 +89,7 @@ export default function TopBar(p: Props) {
               </button>
             ))}
           </div>
+          <CompareButton {...p} />
           <label className="toggle" title="Show shape outlines instead of filled colors">
             <input type="checkbox" checked={p.outlines} onChange={p.onToggleOutlines} />
             Outlines
@@ -103,5 +108,33 @@ export default function TopBar(p: Props) {
         </>
       )}
     </header>
+  );
+}
+
+/**
+ * Hold to show the original picture at the same zoom and position as the
+ * result; a quick click switches comparing on until clicked again.
+ */
+function CompareButton({ compare, compareLocked, onCompareHold, onCompareToggle }: Props) {
+  const downAt = useRef(0);
+  return (
+    <button
+      className={compare ? "on" : ""}
+      aria-pressed={compareLocked}
+      title="Hold to see the original (or hold C). Click to keep it on (or Shift+C)."
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        downAt.current = Date.now();
+        onCompareHold(true);
+      }}
+      onPointerUp={() => {
+        onCompareHold(false);
+        if (Date.now() - downAt.current < 250) onCompareToggle();
+      }}
+      onPointerLeave={() => onCompareHold(false)}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onCompareToggle())}
+    >
+      Compare
+    </button>
   );
 }

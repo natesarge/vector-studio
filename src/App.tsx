@@ -9,6 +9,8 @@ import FontPicker from "./ui/FontPicker";
 import { DEFAULT_FONT, getFont, loadBundledFonts } from "./text/fonts";
 import { defaultText, getLayout, textParts } from "./text/layout";
 import { findLettering, type Pt } from "./text/lettering";
+import { absorb } from "./editor/pathops";
+import type { RegionTool } from "./editor/useEditor";
 import { imageFromDataTransfer, loadImage, type SourceImage } from "./lib/loadImage";
 import { usePalettes } from "./lib/palettes";
 import { defaultSettings, type CleanupSettings } from "./pipeline/types";
@@ -40,6 +42,14 @@ export default function App() {
   const [rightTab, setRightTab] = useState<"shapes" | "text">("shapes");
   const [fontPicker, setFontPicker] = useState(false);
   const [exporting, setExporting] = useState(false);
+  /** Print width in inches, shared by the Export dialog and the ring size readout. */
+  const [printWidthIn, setPrintWidthIn] = useState(3);
+  /** Compare: show the original in place of the result. Held (button or C) or locked on. */
+  const [compareHeld, setCompareHeld] = useState(false);
+  const [compareLocked, setCompareLocked] = useState(false);
+  const compare = compareHeld || compareLocked;
+  /** Message shown at the bottom of the Shapes panel (results of Knife, Merge, ...). */
+  const [editNote, setEditNote] = useState<string | null>(null);
   const [textNote, setTextNote] = useState<string | null>(null);
   /** Font used for new text: whatever the user chose last. */
   const lastFont = useRef(DEFAULT_FONT);
@@ -71,7 +81,10 @@ export default function App() {
           old?.bitmap.close();
           return img;
         });
-        setSettings({ ...defaultSettings(img.width, img.height, []), ...proj.settings });
+        // Projects saved before "border mode" existed had a simple on/off switch.
+        const old = proj.settings as Partial<CleanupSettings> & { border?: boolean };
+        const borderMode = old.borderMode ?? (old.border === false ? "off" : "redraw");
+        setSettings({ ...defaultSettings(img.width, img.height, []), ...proj.settings, borderMode });
         edRef.current.loadDoc({ shapes: proj.shapes, texts: proj.texts ?? [] }, proj.size);
         setError(null);
         return;
@@ -117,9 +130,15 @@ export default function App() {
       }
       if (isTyping(e.target)) return;
       const ctrl = e.ctrlKey || e.metaKey;
+      // C: hold to compare with the original; Shift+C: switch compare on/off.
+      if (e.code === "KeyC" && !ctrl && !e.altKey) {
+        if (!e.repeat) e.shiftKey ? setCompareLocked((v) => !v) : setCompareHeld(true);
+        return;
+      }
       const key = e.key.toLowerCase();
       if (ctrl && key === "z") { e.preventDefault(); e.shiftKey ? ed.redo() : ed.undo(); }
       else if (ctrl && key === "y") { e.preventDefault(); ed.redo(); }
+      else if ((e.key === "Delete" || e.key === "Backspace") && ed.nodeEdit && ed.nodeSel.size) { e.preventDefault(); ed.removeSelectedNodes(); }
       else if ((e.key === "Delete" || e.key === "Backspace") && (ed.selection.size || ed.selectedText)) { e.preventDefault(); ed.remove(); }
       else if (e.key.startsWith("Arrow") && (ed.selection.size || ed.selectedText)) {
         e.preventDefault();
@@ -128,8 +147,14 @@ export default function App() {
                  e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0);
       }
     };
+    const onKeyUp = (e: KeyboardEvent) => e.code === "KeyC" && setCompareHeld(false);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", () => setCompareHeld(false));
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, []);
 
   // Drag a file from the desktop onto the window.
@@ -180,9 +205,17 @@ export default function App() {
       return;
     }
     const text = { ...defaultText(newId(), lastFont.current, 0, 0, 100), ...match.fit };
-    ed.setDoc({ shapes: ed.shapes.filter((s) => !match.removeIds.has(s.id)), texts: [...ed.texts, text] });
+    // Merge the old letters into the shape around them, so no hole is left behind.
+    const remove = new Set(ed.shapes.flatMap((s, i) => (match.removeIds.has(s.id) ? [i] : [])));
+    ed.setDoc({ shapes: absorb(ed.shapes, remove), texts: [...ed.texts, text] });
     ed.selectText(text.id);
     setTextNote(`Replaced ${match.removeIds.size} shapes with ${match.layout === "arc" ? "curved" : "straight"} text. Type the wording and pick a font.`);
+  };
+  /** A box, lasso or knife line was drawn on the picture. */
+  const onRegion = (pts: Pt[], tool: RegionTool) => {
+    if (tool === "box" || tool === "lasso") return replaceLettering(pts);
+    ed.setRegionTool(null);
+    setEditNote(ed.knife(pts, tool === "knifeLine" ? "line" : "lasso"));
   };
   if (ed.selectedText) lastFont.current = ed.selectedText.fontId;
   // Selecting a text on the picture brings up its controls.
@@ -215,7 +248,9 @@ export default function App() {
     const name = baseName(image.name);
     const border = o.border ? { width: o.borderWidth, color: o.borderColor } : null;
     if (o.format === "cut") return downloadText(name + "-cutline.svg", exportCutLine(drawing(), border?.width ?? 0), "image/svg+xml");
-    const svg = exportSvg(drawing(), border);
+    // PNG: one output pixel of hairline (see exportSvg) so shared edges render seamlessly.
+    const hairline = o.format === "png" ? (ed.size.width + (border ? border.width * 2 : 0)) / (o.widthIn * o.dpi) : 0;
+    const svg = exportSvg(drawing(), border, { hairline });
     if (o.format === "svg") downloadText(name + ".svg", svg, "image/svg+xml");
     else if (o.format === "png") downloadBlob(name + ".png", await svgToPng(svg, o.widthIn * o.dpi, o.dpi));
     else downloadBlob(name + ".pdf", await svgToPdf(svg, o.widthIn));
@@ -265,6 +300,10 @@ export default function App() {
         canUndo={ed.canUndo}
         canRedo={ed.canRedo}
         onUndo={ed.undo}
+        compare={compare}
+        compareLocked={compareLocked}
+        onCompareHold={setCompareHeld}
+        onCompareToggle={() => setCompareLocked((v) => !v)}
         onRedo={ed.redo}
         onOpenFile={(f) => void openFile(f, f.name)}
         onExport={() => setExporting(true)}
@@ -296,6 +335,8 @@ export default function App() {
               onManagePalettes={() => setManaging(true)}
               edited={ed.edited}
               result={job.result}
+              printWidthIn={printWidthIn}
+              onPick={startPick}
               busy={job.busy}
               stage={job.stage}
               fraction={job.fraction}
@@ -308,10 +349,11 @@ export default function App() {
               outlines={outlines}
               showShapes={showShapes}
               onPickColor={pick ? finishPick : null}
-              onRegion={replaceLettering}
+              onRegion={onRegion}
+              compare={compare}
             />
             {rightTab === "shapes" ? (
-              <EditPanel ed={ed} tabs={tabs} palette={palettes.active.colors} onPick={startPick} />
+              <EditPanel ed={ed} tabs={tabs} palette={palettes.active.colors} onPick={startPick} note={editNote} setNote={setEditNote} />
             ) : (
               <TextPanel
                 ed={ed}
@@ -354,7 +396,14 @@ export default function App() {
       </main>
 
       {exporting && (
-        <ExportDialog width={ed.size.width} height={ed.size.height} onExport={doExport} onClose={() => setExporting(false)} />
+        <ExportDialog
+          width={ed.size.width}
+          height={ed.size.height}
+          widthIn={printWidthIn}
+          onWidthIn={setPrintWidthIn}
+          onExport={doExport}
+          onClose={() => setExporting(false)}
+        />
       )}
 
       {fontPicker && (

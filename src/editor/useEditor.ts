@@ -5,15 +5,24 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import type { TraceResult } from "../pipeline/types";
 import type { TextObj } from "../text/layout";
 import {
-  bounds, contains, interiorPoint, measure, parseTranslate, rotateAbout, scaleAbout, simplifyPath,
+  bounds, parseTranslate, pathItem, rotateAbout, scaleAbout, simplifyPath,
   smoothPath, transformPath, unionBox, unitePaths, type Box, type Matrix,
 } from "./geom";
+import {
+  absorb, bestNeighbor, breakApart as splitPieces, fillHoles, knife as knifeCut, piecesOf,
+  removeNodes, smoothNodes, type Pt,
+} from "./pathops";
+
+/** Tools that draw a line or region on the picture. */
+export type RegionTool = "box" | "lasso" | "knifeLine" | "knifeLasso";
 
 /** One shape of the drawing. Array order is stacking order (last = on top). */
 export interface DocShape {
   id: number;
   d: string;
   fill: string;
+  /** A label for special shapes, e.g. "Border ring". */
+  name?: string;
 }
 
 let nextId = 1;
@@ -84,9 +93,13 @@ export function useEditor(result: TraceResult | null) {
   const [h, dispatch] = useReducer(reduce, { past: [], present: EMPTY, future: [], base: null });
   const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
   const [textId, setTextId] = useState<number | null>(null);
-  /** Active "draw a region" tool for Replace lettering, if any. */
-  const [regionTool, setRegionTool] = useState<"box" | "lasso" | null>(null);
+  /** Active "draw on the picture" tool (Replace lettering or Knife), if any. */
+  const [regionTool, setRegionTool] = useState<RegionTool | null>(null);
   const [nodeEdit, setNodeEdit] = useState(false);
+  /** Selected points while editing nodes, as "loop:index" keys. */
+  const [nodeSel, setNodeSel] = useState<ReadonlySet<string>>(new Set());
+  /** Point selection to apply when a live "smooth points" preview is committed. */
+  const pendingNodeSel = useRef<Set<string> | null>(null);
   const [size, setSize] = useState({ width: 1, height: 1 });
   const shapes = h.present.shapes;
   const texts = h.present.texts;
@@ -114,7 +127,7 @@ export function useEditor(result: TraceResult | null) {
     }
     const fresh = result.shapes.map((s) => {
       const m = parseTranslate(s.transform);
-      return { id: newId(), d: m ? transformPath(s.d, m) : s.d, fill: s.fill };
+      return { id: newId(), d: m ? transformPath(s.d, m) : s.d, fill: s.fill, ...(s.name ? { name: s.name } : {}) };
     });
     setSize({ width: result.width, height: result.height });
     // Text objects are kept: they sit on top and do not depend on the trace.
@@ -133,6 +146,9 @@ export function useEditor(result: TraceResult | null) {
     });
   }, [shapes]);
 
+  // A different shape, or leaving node editing, clears the point selection.
+  useEffect(() => setNodeSel(new Set()), [selection, nodeEdit]);
+
   const selected = useMemo(() => shapes.filter((s) => selection.has(s.id)), [shapes, selection]);
   const selectionBox: Box | null = useMemo(() => unionBox(selected.map((s) => bounds(s.d))), [selected]);
 
@@ -145,7 +161,7 @@ export function useEditor(result: TraceResult | null) {
 
   const setDoc = useCallback((doc: Doc) => dispatch({ type: "set", doc }), []);
   /** Replace everything with a drawing from a project file (clears undo history). */
-  const loadDoc = useCallback((doc: { shapes: { d: string; fill: string }[]; texts: TextObj[] }, docSize: { width: number; height: number }) => {
+  const loadDoc = useCallback((doc: { shapes: { d: string; fill: string; name?: string }[]; texts: TextObj[] }, docSize: { width: number; height: number }) => {
     loaded.current = true;
     setSize(docSize);
     setSelection(new Set());
@@ -153,7 +169,7 @@ export function useEditor(result: TraceResult | null) {
     setNodeEdit(false);
     dispatch({
       type: "reset",
-      doc: { shapes: doc.shapes.map((s) => ({ id: newId(), d: s.d, fill: s.fill })), texts: doc.texts.map((t) => ({ ...t, id: newId() })) },
+      doc: { shapes: doc.shapes.map((s) => ({ ...s, id: newId() })), texts: doc.texts.map((t) => ({ ...t, id: newId() })) },
     });
   }, []);
   const set = (next: DocShape[]) => dispatch({ type: "set", doc: { shapes: next, texts } });
@@ -217,6 +233,10 @@ export function useEditor(result: TraceResult | null) {
     /** Finish a live preview (slider or colour drag) as one undo step. */
     endLive() {
       commitPreview();
+      if (pendingNodeSel.current) {
+        setNodeSel(pendingNodeSel.current);
+        pendingNodeSel.current = null;
+      }
     },
     setFill(fill: string, live = false) {
       mapSelected((s) => ({ ...s, fill }), live);
@@ -284,41 +304,106 @@ export function useEditor(result: TraceResult | null) {
       setSelection(new Set([merged.id]));
       return null;
     },
-    /** Union each selected shape with the shape lying directly underneath it. */
+    /** Merge each selected shape into the neighbouring shape it touches most. */
     mergeIntoNeighbor(): string | null {
-      let arr = shapes;
-      let done = 0;
-      for (const sh of selected) {
-        const idx = arr.findIndex((s) => s.id === sh.id);
-        const p = interiorPoint(sh.d);
-        let under = -1;
-        for (let i = idx - 1; i >= 0; i--) if (!selection.has(arr[i].id) && contains(arr[i].d, p.x, p.y)) { under = i; break; }
-        if (under < 0) continue;
-        const d = unitePaths(arr[under].d, sh.d);
-        if (!d) continue;
-        arr = arr.flatMap((s, i) => (i === under ? [{ ...s, d }] : s.id === sh.id ? [] : [s]));
-        done++;
-      }
-      if (!done) return "No shape underneath to merge into.";
-      set(arr);
+      const idx = new Set(shapes.flatMap((s, i) => (selection.has(s.id) ? [i] : [])));
+      const items = shapes.map((s) => (selection.has(s.id) ? null : pathItem(s.d)));
+      // Shapes with no neighbour at all would just disappear, so leave those alone.
+      const lonely = [...idx].filter((i) => bestNeighbor(pathItem(shapes[i].d), items) < 0);
+      for (const i of lonely) idx.delete(i);
+      if (!idx.size) return "No neighbouring shape to merge into.";
+      set(absorb(shapes, idx));
       return null;
     },
+    /** Split each selected shape into its separate pieces (holes stay with their piece). */
+    breakApart(): string | null {
+      let pieces = 0;
+      const newSel: number[] = [];
+      const next = shapes.flatMap((s) => {
+        if (!selection.has(s.id)) return [s];
+        const parts = splitPieces(s.d);
+        if (parts.length < 2) {
+          newSel.push(s.id);
+          return [s];
+        }
+        pieces += parts.length;
+        return parts.map((d) => {
+          const id = newId();
+          newSel.push(id);
+          return { ...s, id, d };
+        });
+      });
+      if (!pieces) return "The selection is already in one piece.";
+      set(next);
+      setSelection(new Set(newSel));
+      return `Split into ${pieces} pieces.`;
+    },
+    /** Cut the selected shape(s) in two along a drawn line or lasso. */
+    knife(pts: Pt[], mode: "line" | "lasso"): string {
+      if (!selected.length) return "Select the shape to cut first, then draw the cut.";
+      let cuts = 0;
+      const newSel: number[] = [];
+      const next = shapes.flatMap((s) => {
+        if (!selection.has(s.id)) return [s];
+        const r = knifeCut(s.d, pts, mode);
+        if (!r) return [s];
+        cuts++;
+        const a = { ...s, id: newId(), d: r[0] }, b = { ...s, id: newId(), d: r[1] };
+        newSel.push(a.id, b.id);
+        return [a, b];
+      });
+      if (!cuts) return `The ${mode === "line" ? "line" : "lasso"} did not cut through the selected shape.`;
+      set(next);
+      setSelection(new Set(newSel));
+      return `Cut ${cuts} ${cuts === 1 ? "shape" : "shapes"} in two.`;
+    },
+    /** Node editing: delete the selected points. */
+    removeSelectedNodes() {
+      const sh = selected[0];
+      if (!sh || !nodeSel.size) return;
+      const d = removeNodes(sh.d, nodeSel);
+      set(d ? shapes.map((x) => (x.id === sh.id ? { ...x, d } : x)) : shapes.filter((x) => x.id !== sh.id));
+      setNodeSel(new Set());
+    },
+    /** Node editing: smooth only the selected points (live; endLive() commits). */
+    smoothSelectedNodes(tolerance: number) {
+      const sh = selected[0];
+      const base = sh && liveBase.find((x) => x.id === sh.id);
+      if (!base || !nodeSel.size) return;
+      const r = smoothNodes(base.d, nodeSel, tolerance);
+      pendingNodeSel.current = r.keys;
+      preview(liveBase.map((x) => (x.id === sh.id ? { ...x, d: r.d } : x)));
+    },
     /**
-     * Remove specks, pinholes and slivers. Shapes are stacked, so removing a
-     * tiny shape lets the shape underneath show through: a speck or pinhole
-     * simply disappears and a sliver becomes part of its surroundings.
-     * `sizePx` is in drawing units. Returns how many shapes were removed.
+     * Clean up small defects without leaving gaps: pinholes (small holes) are
+     * filled, and specks and slivers (small or thin pieces) are merged into
+     * the neighbouring shape that surrounds them. `sizePx` is in drawing
+     * units. Returns how many defects were fixed.
      */
     cleanDefects(sizePx: number): number {
-      const keep = shapes.filter((s, i) => {
-        if (i === 0) return true; // never remove the bottom shape
-        const { area, length } = measure(s.d);
-        const thickness = length > 0 ? (2 * area) / length : 0; // average width
-        return !(area < sizePx * sizePx || thickness < sizePx / 4);
-      });
-      const removed = shapes.length - keep.length;
-      if (removed) set(keep);
-      return removed;
+      const minArea = sizePx * sizePx;
+      let fixed = 0;
+      const entries: DocShape[] = [];
+      const remove = new Set<number>();
+      for (const s of shapes) {
+        const d = fillHoles(s.d, minArea);
+        if (d !== s.d) fixed += (s.d.match(/M/gi) ?? []).length - (d.match(/M/gi) ?? []).length;
+        const ps = piecesOf(pathItem(d));
+        const tiny = (p: { area: number; length: number }) => p.area < minArea || (2 * p.area) / Math.max(1, p.length) < sizePx / 4;
+        const good = ps.filter((p) => !tiny(p));
+        if (good.length === ps.length) {
+          entries.push(d === s.d ? s : { ...s, d });
+          continue;
+        }
+        if (good.length) entries.push({ ...s, d: good.map((p) => p.d).join("") });
+        for (const p of ps.filter(tiny)) {
+          remove.add(entries.length);
+          entries.push({ ...s, id: -1, d: p.d });
+        }
+      }
+      fixed += remove.size;
+      if (fixed) set(absorb(entries, remove));
+      return fixed;
     },
   };
 
@@ -326,7 +411,7 @@ export function useEditor(result: TraceResult | null) {
     shapes, texts, size, selection, selected, selectionBox, groups, edited,
     selectedText, regionTool, setRegionTool, setDoc, loadDoc,
     canUndo: h.past.length > 0 || h.base !== null, canRedo: h.future.length > 0,
-    nodeEdit, setNodeEdit, set, preview, commitPreview,
+    nodeEdit, setNodeEdit, nodeSel, setNodeSel, set, preview, commitPreview,
     ...actions,
   };
 }

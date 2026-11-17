@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SourceImage } from "../lib/loadImage";
 import EditorLayer from "../editor/EditorLayer";
-import type { Editor } from "../editor/useEditor";
+import type { Editor, RegionTool } from "../editor/useEditor";
 import { rgbToHex } from "../pipeline/color";
 import type { Pt } from "../text/lettering";
 
@@ -38,7 +38,9 @@ interface PaneProps {
   showShapes: boolean;
   /** When set, the next click picks a colour instead of selecting. */
   onPickColor: ((hex: string) => void) | null;
-  onRegion: (polygon: Pt[]) => void;
+  onRegion: (points: Pt[], tool: RegionTool) => void;
+  /** Show the original picture in place of the result (the Compare button / C key). */
+  compare: boolean;
   view: View;
   setView: React.Dispatch<React.SetStateAction<View>>;
   zoomAt: (el: HTMLElement, factor: number, cx?: number, cy?: number) => void;
@@ -49,7 +51,7 @@ interface PaneProps {
 }
 
 /** One view of the artwork. Side-by-side mode shows two of these in step. */
-function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, view, setView, zoomAt, onFit, checkerboard, outlines, paneRef }: PaneProps) {
+function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, compare, view, setView, zoomAt, onFit, checkerboard, outlines, paneRef }: PaneProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [split, setSplit] = useState(0.5); // slider position, 0..1 across the image
@@ -115,7 +117,17 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, view,
       }
       return;
     }
-    if (kind === "original") return;
+    if (kind === "original" || compare) return;
+    if (e.altKey) {
+      // Alt+click: select the next shape underneath the mouse (cycles round).
+      const under = document.elementsFromPoint(e.clientX, e.clientY)
+        .filter((el) => el.matches("[data-shape-id]"))
+        .map((el) => Number(el.getAttribute("data-shape-id")));
+      if (!under.length) return;
+      const current = ed.selection.size === 1 ? [...ed.selection][0] : -1;
+      const at = under.indexOf(current);
+      return ed.select([under[(at + 1) % under.length]]);
+    }
     if (textEl) ed.selectText(Number(textEl.getAttribute("data-text-id")));
     else if (shapeEl) ed.select([Number(shapeEl.getAttribute("data-shape-id"))], e.shiftKey);
     else if (!target.closest(".handle") && !e.shiftKey) ed.clearSelection();
@@ -130,8 +142,8 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, view,
   };
 
   const hasResult = ed.shapes.length > 0;
-  const showOriginal = kind !== "result" || !hasResult;
-  const showResult = kind !== "original" && hasResult;
+  const showOriginal = kind !== "result" || !hasResult || compare;
+  const showResult = kind !== "original" && hasResult && !compare;
   const splitX = view.x + split * image.width * view.scale;
 
   return (
@@ -162,7 +174,7 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, view,
           imageRendering: view.scale > 3 ? "pixelated" : "auto",
         }}
       >
-        {showOriginal && <OriginalLayer image={image} dim={kind === "result"} />}
+        {showOriginal && <OriginalLayer image={image} dim={kind === "result" && !compare} />}
         {showResult && (
           <EditorLayer
             ed={ed}
@@ -175,7 +187,7 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, view,
         )}
       </div>
 
-      {kind === "slider" && hasResult && (
+      {kind === "slider" && hasResult && !compare && (
         <div
           className="split-handle"
           style={{ left: splitX }}
@@ -196,6 +208,9 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, view,
         </div>
       )}
       {label && <span className="pane-label">{label}</span>}
+      {compare && kind !== "original" && (
+        <span className="pane-label compare" data-testid="compare-badge">Original (comparing)</span>
+      )}
     </div>
   );
 }
@@ -208,11 +223,13 @@ interface Props {
   outlines: boolean;
   showShapes: boolean;
   onPickColor: ((hex: string) => void) | null;
-  onRegion: (polygon: Pt[]) => void;
+  onRegion: (points: Pt[], tool: RegionTool) => void;
+  /** Show the original picture in place of the result (the Compare button / C key). */
+  compare: boolean;
 }
 
 /** The big central area: one or two panes plus the zoom buttons. */
-export default function CanvasView({ image, ed, mode, checkerboard, outlines, showShapes, onPickColor, onRegion }: Props) {
+export default function CanvasView({ image, ed, mode, checkerboard, outlines, showShapes, onPickColor, onRegion, compare }: Props) {
   const firstPane = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
 
@@ -251,7 +268,7 @@ export default function CanvasView({ image, ed, mode, checkerboard, outlines, sh
   const twoPanes = mode === "side";
   useLayoutEffect(fit, [fit, twoPanes]);
 
-  const common = { image, ed, showShapes, onPickColor, onRegion, view, setView, zoomAt, onFit: fit, checkerboard, outlines };
+  const common = { image, ed, showShapes, onPickColor, onRegion, compare, view, setView, zoomAt, onFit: fit, checkerboard, outlines };
   return (
     <div className="canvas-area">
       <div className="panes">

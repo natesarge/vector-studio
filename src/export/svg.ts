@@ -41,7 +41,7 @@ function header(r: Drawing, pad: number): string[] {
  * earlier ones), and neighbours of the same colour share one <g> group.
  * Text is written as plain outlines, so no font is needed to open the file.
  */
-export function exportSvg(r: Drawing, border?: StickerBorder | null): string {
+export function exportSvg(r: Drawing, border?: StickerBorder | null, opts: { hairline?: number } = {}): string {
   const pad = border ? border.width : 0;
   const lines = header(r, pad);
   if (border) {
@@ -52,7 +52,10 @@ export function exportSvg(r: Drawing, border?: StickerBorder | null): string {
     const fill = r.shapes[i].fill;
     let j = i;
     while (j < r.shapes.length && r.shapes[j].fill === fill) j++;
-    lines.push(`  <g fill="${fill}">`);
+    // For pictures (PNG), a hairline outline in the shape's own colour hides the
+    // faint see-through seams a renderer leaves where two shapes meet edge to edge.
+    const seam = opts.hairline ? ` stroke="${fill}" stroke-width="${n2(opts.hairline)}" stroke-linejoin="round"` : "";
+    lines.push(`  <g fill="${fill}"${seam}>`);
     for (let n = i; n < j; n++) lines.push(`    <path d="${r.shapes[n].d}"/>`);
     lines.push(`  </g>`);
     i = j;

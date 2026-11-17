@@ -13,7 +13,10 @@ import { binOf, mergeShades, quantize, type Quantized } from "./kmeans";
 import { voteLabels } from "./labels";
 import { removeTexture } from "./meanshift";
 import { trace } from "./trace";
-import { planSizes, type CleanupSettings, type Sizes, type TraceResult, type WorkerRequest, type WorkerResponse } from "./types";
+import { planSizes, type CleanupSettings, type Shape, type Sizes, type TraceResult, type WorkerRequest, type WorkerResponse } from "./types";
+import { parseTranslate, transformPath } from "../editor/geom";
+import { clipTo, flattenShapes, insetOutline, ringBetween, type OutlineShape } from "../editor/pathops";
+import { offsetOutline, outerOutline } from "../export/outline";
 
 const post = (m: WorkerResponse) => (self as DedicatedWorkerGlobalScope).postMessage(m);
 
@@ -156,34 +159,39 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
   const fit = soft && (await step("fit", fitKey, () => snapOutline(soft, MASK_LEVEL, bw, bh, s.outlineSnap)));
   const mask = fit && (await step("maskW", fitKey, () => renderFit(fit, sizes)));
 
-  // 7. Find the outer border band and redraw it as one solid band.
+  // 7. Find the outer border band: its width and colour.
   let finalLabels = labels, kOut = k, borderLabel = -1, borderWidth = 0;
   let borderRgb: RGB | null = null;
-  if (soft && fit && mask && s.border) {
-    stage("Finding the border", 0.77, 0.8);
-    await pause();
-    const found = await step("border", `${labelsKey}|${maskKey}`, () => {
-      const baseLabels = new Uint8Array(n), raw = new Uint8Array(n);
-      for (let y = 0; y < bh; y++) {
-        const Y = Math.min(H - 1, Math.floor((y + 0.5) * scale));
-        for (let x = 0; x < bw; x++) {
-          const i = y * bw + x;
-          baseLabels[i] = labels[Y * W + Math.min(W - 1, Math.floor((x + 0.5) * scale))];
-          raw[i] = soft[i] > MASK_LEVEL ? 1 : 0;
+  const found = soft && fit && mask && s.borderMode !== "off"
+    ? await step("border", `${labelsKey}|${maskKey}`, () => {
+        const baseLabels = new Uint8Array(n), raw = new Uint8Array(n);
+        for (let y = 0; y < bh; y++) {
+          const Y = Math.min(H - 1, Math.floor((y + 0.5) * scale));
+          for (let x = 0; x < bw; x++) {
+            const i = y * bw + x;
+            baseLabels[i] = labels[Y * W + Math.min(W - 1, Math.floor((x + 0.5) * scale))];
+            raw[i] = soft[i] > MASK_LEVEL ? 1 : 0;
+          }
         }
-      }
-      return findBorder(baseLabels, k, raw, rgb, bw, bh);
-    });
-    if (found) {
-      borderWidth = Math.max(1, found.width + s.borderExtra);
-      const inner = await step("inner", `${fitKey}|${labelsKey}|${borderWidth}`, () => renderFit(fit, sizes, borderWidth));
-      borderLabel = k;
-      kOut = k + 1;
-      finalLabels = new Uint8Array(labels);
-      // The band, and everything outside the design (so no fringe shows at the edge).
-      for (let i = 0; i < W * H; i++) if (!mask[i] || !inner[i]) finalLabels[i] = borderLabel;
-      borderRgb = s.borderColor ? hexToRgb(s.borderColor) : found.color;
-    }
+        return findBorder(baseLabels, k, raw, rgb, bw, bh);
+      })
+    : null;
+  const brand = s.paletteSnap && s.palette.length ? s.palette.map(hexToRgb) : null;
+  if (found) {
+    // A colour the user picked is used exactly; a detected one may be snapped.
+    borderRgb = s.borderColor ? hexToRgb(s.borderColor) : brand ? nearestPaletteColor(found.color, brand) : found.color;
+  }
+  // "Redraw" mode: paint the band in one colour before tracing.
+  if (found && fit && mask && s.borderMode === "redraw") {
+    stage("Redrawing the border", 0.77, 0.8);
+    await pause();
+    borderWidth = Math.max(1, found.width + s.borderExtra);
+    const inner = await step("inner", `${fitKey}|${labelsKey}|${borderWidth}`, () => renderFit(fit, sizes, borderWidth));
+    borderLabel = k;
+    kOut = k + 1;
+    finalLabels = new Uint8Array(labels);
+    // The band, and everything outside the design (so no fringe shows at the edge).
+    for (let i = 0; i < W * H; i++) if (!mask[i] || !inner[i]) finalLabels[i] = borderLabel;
   }
 
   // 8. Final colours: each region's real median colour, optionally snapped to a palette.
@@ -199,12 +207,10 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
       total[lab]++;
     }
   }
-  const brand = s.paletteSnap && s.palette.length ? s.palette.map(hexToRgb) : null;
   const pal: RGB[] = [];
   for (let i = 0; i < kOut; i++) {
     if (i === borderLabel && borderRgb) {
-      // A colour the user typed is used exactly; a detected one may be snapped.
-      pal.push(brand && !s.borderColor ? nearestPaletteColor(borderRgb, brand) : borderRgb);
+      pal.push(borderRgb);
       total[i] = Math.max(1, total[i]);
       continue;
     }
@@ -217,37 +223,93 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
     pal.push(brand ? nearestPaletteColor(med, brand) : med);
   }
 
-  // Flat-colour picture with transparency outside the design.
-  const flat = new Uint8Array(W * H * 4);
-  for (let i = 0; i < W * H; i++) {
-    const c = pal[finalLabels[i]];
-    flat[i * 4] = c[0]; flat[i * 4 + 1] = c[1]; flat[i * 4 + 2] = c[2];
-    flat[i * 4 + 3] = !mask || mask[i] ? 255 : 0;
-  }
-
-  // 9. Trace to vector shapes.
-  stage("Tracing shapes", 0.82, 1);
+  // 9. Trace to vector shapes. Remembered, so ring and flatten settings
+  //    (which only change what happens afterwards) do not trigger a re-trace.
+  const traceSettings: Partial<CleanupSettings> = { ...s };
+  for (const key of ["ringWidth", "clipInside", "ring2", "ring2Width", "ring2Gap", "ring2Color", "flatten"] as const) delete traceSettings[key];
+  if (s.borderMode === "ring") traceSettings.borderColor = null;
+  const traceKey = `${im.id}|${JSON.stringify(traceSettings)}`;
+  stage("Tracing shapes", 0.82, 0.9);
   await pause();
-  const shapes = await trace(flat, W, H, s);
-
-  // VTracer sometimes reports a shape's colour a few shades off (it averages
-  // internally). Put every shape back on the exact colour we chose above.
-  const exact = new Map<string, string>();
-  for (const sh of shapes) {
-    let fixed = exact.get(sh.fill);
-    if (!fixed) {
-      const c = hexToRgb(sh.fill);
-      let bestD = Infinity, bestC = c;
-      for (let i = 0; i < kOut; i++) {
-        if (!total[i]) continue;
-        const d = Math.hypot(c[0] - pal[i][0], c[1] - pal[i][1], c[2] - pal[i][2]);
-        if (d < bestD) { bestD = d; bestC = pal[i]; }
-      }
-      fixed = rgbToHex(bestC[0], bestC[1], bestC[2]);
-      exact.set(sh.fill, fixed);
+  const traced = await step("trace", traceKey, async () => {
+    // Flat-colour picture with transparency outside the design.
+    const flat = new Uint8Array(W * H * 4);
+    for (let i = 0; i < W * H; i++) {
+      const c = pal[finalLabels[i]];
+      flat[i * 4] = c[0]; flat[i * 4 + 1] = c[1]; flat[i * 4 + 2] = c[2];
+      flat[i * 4 + 3] = !mask || mask[i] ? 255 : 0;
     }
-    sh.fill = fixed;
+    const raw = await trace(flat, W, H, s);
+    // VTracer sometimes reports a shape's colour a few shades off (it averages
+    // internally). Put every shape back on the exact colour we chose above,
+    // and bake any position offset into the path itself.
+    const exact = new Map<string, string>();
+    return raw.map((sh): Shape => {
+      let fixed = exact.get(sh.fill);
+      if (!fixed) {
+        const c = hexToRgb(sh.fill);
+        let bestD = Infinity, bestC = c;
+        for (let i = 0; i < kOut; i++) {
+          if (!total[i]) continue;
+          const d = Math.hypot(c[0] - pal[i][0], c[1] - pal[i][1], c[2] - pal[i][2]);
+          if (d < bestD) { bestD = d; bestC = pal[i]; }
+        }
+        fixed = rgbToHex(bestC[0], bestC[1], bestC[2]);
+        exact.set(sh.fill, fixed);
+      }
+      const m = parseTranslate(sh.transform);
+      return { d: m ? transformPath(sh.d, m) : sh.d, fill: fixed };
+    });
+  });
+
+  // 10. "Clean ring" mode: a vector ring on its own top layer, built from the
+  //     snapped outline. The artwork can be trimmed to the ring's inner edge.
+  let shapes: Shape[] = traced;
+  let rings: Shape[] = [];
+  let postKey = traceKey;
+  // Automatic ring width = the same width "Redraw" uses (detected + adjust),
+  // so the ring covers the ragged inner edge of the old traced border.
+  const borderAuto = found ? Math.round(Math.max(1, found.width + s.borderExtra) * scale) : 0;
+  if (s.borderMode === "ring" && fit) {
+    stage("Building the border ring", 0.9, 0.92);
+    await pause();
+    const width = Math.max(1, s.ringWidth ?? (borderAuto || Math.round(W / 25)));
+    borderWidth = width / scale; // reported below in drawing pixels
+    const geoKey = `${traceKey}|${fitKey}|${width}|${s.ring2}|${s.ring2Width}|${s.ring2Gap}`;
+    const geo = await step("ring", geoKey, () => {
+      const outline: OutlineShape =
+        fit.kind === "ellipse" ? { kind: "ellipse", cx: fit.cx * scale, cy: fit.cy * scale, a: fit.a * scale, b: fit.b * scale, angle: fit.angle }
+        : fit.kind === "rrect" ? { kind: "rrect", cx: fit.cx * scale, cy: fit.cy * scale, hw: fit.hw * scale, hh: fit.hh * scale, r: fit.r * scale, angle: fit.angle }
+        : { kind: "path", d: outerOutline(traced) };
+      const outer = insetOutline(outline, 0, offsetOutline)!;
+      const inner = insetOutline(outline, width, offsetOutline);
+      const ring = ringBetween(outer, inner);
+      let ring2 = "";
+      if (s.ring2 && inner) {
+        const o2 = insetOutline(outline, width + s.ring2Gap, offsetOutline);
+        const i2 = insetOutline(outline, width + s.ring2Gap + s.ring2Width, offsetOutline);
+        if (o2) ring2 = ringBetween(o2, i2);
+      }
+      return { ring, inner, ring2 };
+    });
+    const ringHex = borderRgb ? rgbToHex(borderRgb[0], borderRgb[1], borderRgb[2]) : "#1C4062";
+    rings = [{ d: geo.ring, fill: ringHex, name: "Border ring" }];
+    if (geo.ring2) rings.push({ d: geo.ring2, fill: s.ring2Color.toUpperCase(), name: "Inner ring" });
+    if (s.clipInside && geo.inner) {
+      const innerD = geo.inner;
+      postKey = `${geoKey}|clip`;
+      shapes = await step("clip", postKey, () => clipTo(traced, innerD));
+    }
   }
+
+  // 11. Flatten overlaps: cut every shape out of the shapes below it.
+  if (s.flatten) {
+    stage("Flattening overlaps", 0.92, 1);
+    await pause();
+    const below = shapes;
+    shapes = await step("flatten", `${postKey}|flat`, () => flattenShapes(below, s.speckle, tick));
+  }
+  shapes = [...shapes, ...rings];
 
   const use = new Map<string, number>();
   for (const sh of shapes) use.set(sh.fill, (use.get(sh.fill) ?? 0) + 1);
@@ -256,6 +318,7 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
   console.debug("[pipeline] " + timings.join(" · "));
   return {
     width: W, height: H, shapes, colors, ms: Math.round(performance.now() - t0),
-    outline: fit ? fitName(fit) : "", borderWidth: Math.round(borderWidth * scale),
+    outline: fit ? fitName(fit) : "", borderWidth: Math.round(borderWidth * scale), borderAuto,
+    borderColor: borderRgb ? rgbToHex(borderRgb[0], borderRgb[1], borderRgb[2]) : "",
   };
 }

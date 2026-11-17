@@ -187,3 +187,8 @@ export function rotateAbout(deg: number, cx: number, cy: number): Matrix {
   const r = (deg * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r);
   return [c, s, -s, c, cx - c * cx + s * cy, cy - s * cx - c * cy];
 }
+
+/** Paper.js path object for path text (for the operations in pathops.ts). */
+export const pathItem = item;
+/** Make sure Paper.js is set up before creating shapes directly. */
+export const ensurePaper = setup;

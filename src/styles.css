@@ -294,3 +294,17 @@ button.wide.first { margin-top: 0; }
 .form-row.end { justify-content: flex-end; margin-top: 6px; }
 .modal .check { margin: 4px 0 0; }
 .topbar { gap: 8px; }
+
+/* ================= M5.5: tools and selection ================= */
+.hover-outline { fill: none; stroke: #00b7ff; stroke-width: 1.5px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; opacity: 0.9; }
+.node-catcher { fill: transparent; cursor: crosshair; }
+.seg-hit { fill: none; stroke: transparent; stroke-width: 12px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: copy; }
+.node-box { fill: rgba(0, 183, 255, 0.12); stroke: #00b7ff; stroke-width: 1px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.region-catcher.knife { fill: rgba(215, 80, 25, 0.05); }
+.knife-line { stroke: #d7193a; stroke-width: 2px; stroke-dasharray: 8 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+.region-shape.knife { fill: rgba(215, 25, 58, 0.12); stroke: #d7193a; }
+.node-tools { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.pane-label.compare { left: auto; right: 10px; color: #1b1109; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.disabled-block { opacity: 0.45; pointer-events: none; }
+/* Shapes get a hairline in their own colour (set in EditorLayer) so edges where two shapes meet show no seam. */
+.editor-layer > path[data-shape-id] { stroke-width: 0.75px; vector-effect: non-scaling-stroke; stroke-linejoin: round; }

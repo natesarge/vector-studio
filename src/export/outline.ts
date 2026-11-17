@@ -3,6 +3,7 @@
 
 import paper from "paper/dist/paper-core";
 import { measure, outlinePoints } from "../editor/geom";
+import { fillHoles } from "../editor/pathops";
 
 const item = (d: string) => new paper.CompoundPath({ pathData: d, insert: false });
 
@@ -12,7 +13,8 @@ const item = (d: string) => new paper.CompoundPath({ pathData: d, insert: false 
  */
 export function outerOutline(shapes: { d: string }[]): string {
   const sorted = shapes
-    .map((s) => ({ d: s.d, area: measure(s.d).area })) // measure() also makes sure Paper is ready
+    .map((s) => fillHoles(s.d)) // holes do not matter for the outer edge
+    .map((d) => ({ d, area: measure(d).area })) // measure() also makes sure Paper is ready
     .sort((a, b) => b.area - a.area);
   let acc: paper.PathItem | null = null;
   for (const s of sorted) {
@@ -33,16 +35,16 @@ export function outerOutline(shapes: { d: string }[]): string {
 }
 
 /**
- * Push an outline outward by `dist`. The outline is turned into many short
+ * Push an outline outward by `dist` (a negative `dist` pulls it inward). The outline is turned into many short
  * straight pieces, each corner is moved along its outward direction, and any
  * overlaps this creates are cleaned up.
  */
 export function offsetOutline(d: string, dist: number): string {
-  if (!d || dist <= 0) return d;
+  if (!d || dist === 0) return d;
   let out = "";
   for (const src of item(d).children as paper.Path[]) {
     const flat = src.clone({ insert: false }) as paper.Path;
-    flat.flatten(Math.max(0.25, dist / 40));
+    flat.flatten(Math.max(0.25, Math.abs(dist) / 40));
     const pts = flat.segments.map((s) => s.point);
     const n = pts.length;
     if (n < 3) continue;
@@ -71,7 +73,7 @@ export function offsetOutline(d: string, dist: number): string {
     const loops = (grown instanceof paper.CompoundPath ? grown.children : [grown]) as paper.Path[];
     if (!loops.length) continue;
     const main = loops.reduce((a, b) => (Math.abs(b.area) > Math.abs(a.area) ? b : a));
-    main.simplify(Math.max(0.3, dist / 60)); // back to smooth curves
+    main.simplify(Math.max(0.3, Math.abs(dist) / 60)); // back to smooth curves
     out += main.pathData;
   }
   return out;

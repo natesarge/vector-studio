@@ -18,6 +18,9 @@ interface Props {
   /** Size of the drawing in its own pixels. */
   width: number;
   height: number;
+  /** Print width in inches, shared with the rest of the app. */
+  widthIn: number;
+  onWidthIn: (inches: number) => void;
   /** Runs the export; resolves when the file has been handed to the browser. */
   onExport: (o: ExportOptions) => Promise<void>;
   onClose: () => void;
@@ -31,13 +34,16 @@ const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
 ];
 
 /** Dialog for choosing a file format and its options. */
-export default function ExportDialog({ width, height, onExport, onClose }: Props) {
+export default function ExportDialog({ width, height, widthIn, onWidthIn, onExport, onClose }: Props) {
   const [o, setO] = useState<ExportOptions>({
-    format: "svg", border: false, borderWidth: Math.round(width / 40), borderColor: "#FFFFFF", widthIn: 3, dpi: 300,
+    format: "svg", border: false, borderWidth: Math.round(width / 40), borderColor: "#FFFFFF", widthIn, dpi: 300,
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const set = (patch: Partial<ExportOptions>) => setO((old) => ({ ...old, ...patch }));
+  const set = (patch: Partial<ExportOptions>) => {
+    setO((old) => ({ ...old, ...patch }));
+    if (patch.widthIn !== undefined) onWidthIn(patch.widthIn);
+  };
 
   const pad = o.border ? o.borderWidth * 2 : 0;
   const ratio = (height + pad) / (width + pad);

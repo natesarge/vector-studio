@@ -22,12 +22,27 @@ export interface CleanupSettings {
   palette: string[];
   /** Replace the outer outline with a perfect shape: auto-detect, force one, or leave as traced. */
   outlineSnap: "auto" | "circle" | "rect" | "off";
-  /** Detect the outer border band and redraw it as one solid band. */
-  border: boolean;
-  /** Extra border width in image pixels, added to the detected width (may be negative). */
+  /**
+   * Outer border: "redraw" = detect the band and re-trace it as one solid
+   * colour; "ring" = a clean vector ring on its own top layer; "off".
+   */
+  borderMode: "redraw" | "ring" | "off";
+  /** Redraw mode: extra width in image pixels, added to the detected width (may be negative). */
   borderExtra: number;
   /** Border colour as "#RRGGBB", or null to take it from the image. */
   borderColor: string | null;
+  /** Ring mode: ring width in drawing pixels, or null to use the detected border width. */
+  ringWidth: number | null;
+  /** Ring mode: trim the artwork to the ring's inner edge. */
+  clipInside: boolean;
+  /** Ring mode: optional second, thinner ring just inside the first. */
+  ring2: boolean;
+  ring2Width: number;
+  /** Space between the two rings, in drawing pixels. */
+  ring2Gap: number;
+  ring2Color: string;
+  /** Cut upper shapes out of the shapes below, so no two shapes overlap. */
+  flatten: boolean;
 }
 
 /** One traced shape. Shapes are stacked: later ones are drawn on top. */
@@ -35,6 +50,8 @@ export interface Shape {
   d: string;
   fill: string;
   transform?: string;
+  /** A label for special shapes, e.g. "Border ring". */
+  name?: string;
 }
 
 export interface TraceResult {
@@ -48,8 +65,12 @@ export interface TraceResult {
   ms: number;
   /** What the outer outline was recognised as, e.g. "circle" ("" if background removal is off). */
   outline: string;
-  /** Width of the redrawn border band in drawing units (0 = none). */
+  /** Width of the redrawn border band or ring in drawing units (0 = none). */
   borderWidth: number;
+  /** Detected border width plus the width adjust, in drawing units (0 = none found): the ring's automatic width. */
+  borderAuto: number;
+  /** Colour used for the border band or ring ("" = none). */
+  borderColor: string;
 }
 
 export type WorkerRequest =
@@ -102,8 +123,15 @@ export function defaultSettings(srcW: number, srcH: number, palette: string[]): 
     paletteSnap: false,
     palette,
     outlineSnap: "auto",
-    border: true,
+    borderMode: "redraw",
     borderExtra: 7,
     borderColor: null,
+    ringWidth: null,
+    clipInside: true,
+    ring2: false,
+    ring2Width: Math.max(2, Math.round(W / 120)),
+    ring2Gap: Math.max(2, Math.round(W / 80)),
+    ring2Color: "#EFD8B1",
+    flatten: true,
   };
 }

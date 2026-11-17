@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Editor } from "../editor/useEditor";
+import { parseNodes } from "../editor/geom";
 import { shapeSize } from "../editor/EditorLayer";
 import ColorPicker from "./ColorPicker";
 
@@ -9,10 +10,13 @@ interface Props {
   palette: string[];
   /** Start eyedropper mode; `use` receives the picked colour. */
   onPick: (use: (hex: string) => void) => void;
+  /** Message shown at the bottom of the panel (owned by the app, so tools can report too). */
+  note: string | null;
+  setNote: (msg: string | null) => void;
 }
 
 /** Right panel: colours, the selected shape(s), path tools and defect cleanup. */
-export default function EditPanel({ ed, tabs, palette, onPick }: Props) {
+export default function EditPanel({ ed, tabs, palette, onPick, note, setNote }: Props) {
   // Which colour group has its picker open. Remembered by shape ids, because
   // the group's colour changes while the user is choosing a new one.
   const [recolor, setRecolor] = useState<{ ids: ReadonlySet<number>; anchor: number } | null>(null);
@@ -21,13 +25,32 @@ export default function EditPanel({ ed, tabs, palette, onPick }: Props) {
   const [angle, setAngle] = useState(15);
   const [percent, setPercent] = useState(110);
   const [defectSize, setDefectSize] = useState(Math.max(4, Math.round(ed.size.width / 250)));
-  const [note, setNote] = useState<string | null>(null);
+  const [nodeSmooth, setNodeSmooth] = useState(0);
+  const listRef = useRef<HTMLUListElement>(null);
 
   const n = ed.selected.length;
   const fill = n ? ed.selected[0].fill : "#000000";
   const mixed = n > 1 && ed.selected.some((s) => s.fill !== fill);
   const say = (msg: string | null) => setNote(msg);
   const order = (id: number) => ed.shapes.findIndex((s) => s.id === id) + 1;
+  const points = useMemo(
+    () => (n === 1 ? parseNodes(ed.selected[0].d).reduce((k, sp) => k + sp.nodes.length, 0) : 0),
+    [n, ed.selected],
+  );
+
+  // Clicking a shape on the picture opens its colour group in the list below
+  // and scrolls its row into view.
+  const single = n === 1 ? ed.selected[0] : null;
+  useEffect(() => {
+    if (!single) return;
+    setOpen(single.fill);
+    requestAnimationFrame(() =>
+      listRef.current?.querySelector(`[data-row-id="${single.id}"]`)?.scrollIntoView({ block: "nearest" }));
+  }, [single?.id, single?.fill]); // eslint-disable-line react-hooks/exhaustive-deps
+  const commitNodeSmooth = () => {
+    ed.endLive();
+    setNodeSmooth(0);
+  };
 
   return (
     <aside className="panel right" aria-label="Edit">
@@ -37,7 +60,7 @@ export default function EditPanel({ ed, tabs, palette, onPick }: Props) {
         <section>
           <h3>Colors</h3>
           <p className="fine top">Click a swatch to recolor every shape of that color.</p>
-          <ul className="groups" data-testid="color-groups">
+          <ul className="groups" data-testid="color-groups" ref={listRef}>
             {ed.groups.map((g) => {
               const isOpen = recolor !== null && g.ids.includes(recolor.anchor);
               return (
@@ -82,10 +105,11 @@ export default function EditPanel({ ed, tabs, palette, onPick }: Props) {
                           <li key={id}>
                             <button
                               className={ed.selection.has(id) ? "on" : ""}
+                              data-row-id={id}
                               onClick={(e) => ed.select([id], e.shiftKey)}
                               title="Select this shape (Shift-click to add)"
                             >
-                              Shape {order(id)} <span className="muted">{shapeSize(s.d)}</span>
+                              {s.name ?? `Shape ${order(id)}`} <span className="muted">{shapeSize(s.d)}</span>
                             </button>
                           </li>
                         );
@@ -154,6 +178,7 @@ export default function EditPanel({ ed, tabs, palette, onPick }: Props) {
               <p className="fine">Or drag the box handles on the picture.</p>
 
               <h4>Path</h4>
+              {n === 1 && <p className="fine top" data-testid="point-count">{points} points</p>}
               <label className="field" title="Fewer points, simpler outline. Slide right for more.">
                 <span className="field-head">
                   <span>Simplify</span>
@@ -177,7 +202,55 @@ export default function EditPanel({ ed, tabs, palette, onPick }: Props) {
                 >
                   Edit nodes
                 </button>
+                <button onClick={() => setNote(ed.breakApart())} title="Split into separate pieces (each closed outline becomes its own shape)">
+                  Break apart
+                </button>
+                <span />
+                <button
+                  className={ed.regionTool === "knifeLine" ? "on" : ""}
+                  aria-pressed={ed.regionTool === "knifeLine"}
+                  onClick={() => ed.setRegionTool(ed.regionTool === "knifeLine" ? null : "knifeLine")}
+                  title="Cut the selected shape in two: drag a straight line across it"
+                >
+                  Knife: line
+                </button>
+                <button
+                  className={ed.regionTool === "knifeLasso" ? "on" : ""}
+                  aria-pressed={ed.regionTool === "knifeLasso"}
+                  onClick={() => ed.setRegionTool(ed.regionTool === "knifeLasso" ? null : "knifeLasso")}
+                  title="Cut the selected shape in two: draw a loop around the part to cut off"
+                >
+                  Knife: lasso
+                </button>
               </div>
+
+              {ed.nodeEdit && n === 1 && (
+                <div className="node-tools" data-testid="node-tools">
+                  <p className="fine top" data-testid="node-info">
+                    {points} points · {ed.nodeSel.size} selected
+                  </p>
+                  <p className="fine top">
+                    Click a point to select it, Shift+click to add, or drag a box around several. Delete removes them.
+                    Double-click the outline to add a point. Hold Space and drag to pan.
+                  </p>
+                  <label className="field" title="Smooth only the selected points; the rest of the shape keeps its detail">
+                    <span className="field-head">
+                      <span>Smooth selected points</span>
+                      <span className="field-value">{nodeSmooth}</span>
+                    </span>
+                    <input
+                      type="range" aria-label="Smooth selected points" min={0} max={40} step={1} value={nodeSmooth}
+                      disabled={!ed.nodeSel.size}
+                      onChange={(e) => { const v = Number(e.target.value); setNodeSmooth(v); ed.smoothSelectedNodes(v); }}
+                      onPointerUp={commitNodeSmooth}
+                      onKeyUp={commitNodeSmooth}
+                    />
+                  </label>
+                  <button className="wide first" disabled={!ed.nodeSel.size} onClick={() => ed.removeSelectedNodes()}>
+                    Delete selected points
+                  </button>
+                </div>
+              )}
 
               <h4>Merge</h4>
               <div className="btn-grid">

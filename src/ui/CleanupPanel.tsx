@@ -1,5 +1,6 @@
 import type { CleanupSettings, TraceResult } from "../pipeline/types";
 import type { Palettes } from "../lib/palettes";
+import ColorPicker from "./ColorPicker";
 
 interface SliderProps {
   label: string;
@@ -48,14 +49,27 @@ interface Props {
   /** True once shapes have been edited by hand (re-tracing would replace them). */
   edited: boolean;
   result: TraceResult | null;
+  /** Print width (inches) from the Export dialog, to show sizes in real units. */
+  printWidthIn: number;
+  /** Start the eyedropper; `use` receives the picked colour. */
+  onPick: (use: (hex: string) => void) => void;
   busy: boolean;
   stage: string;
   fraction: number;
 }
 
 /** Left panel: every setting of the clean-up pipeline, with live preview. */
-export default function CleanupPanel({ settings: s, onChange, onReset, palettes, onManagePalettes, edited, result, busy, stage, fraction }: Props) {
+export default function CleanupPanel({ settings: s, onChange, onReset, palettes, onManagePalettes, edited, result, printWidthIn, onPick, busy, stage, fraction }: Props) {
   const palette = palettes.active;
+  // Sizes for the clean ring, in drawing pixels and in real units when printed.
+  const W = result?.width ?? 2000;
+  const ringW = s.ringWidth ?? (result?.borderAuto || Math.round(W / 25));
+  const real = (px: number) => {
+    const inch = (px / W) * printWidthIn;
+    return `${(inch * 25.4).toFixed(1)} mm / ${inch.toFixed(2)} in`;
+  };
+  const ringColor = s.borderColor ?? (result?.borderColor || "#1C4062");
+  const noBorder = !s.removeBackground;
   return (
     <aside className="panel left" aria-label="Clean up">
       <div className="panel-head">
@@ -109,46 +123,137 @@ export default function CleanupPanel({ settings: s, onChange, onReset, palettes,
               <option value="off">Off (keep traced outline)</option>
             </select>
           </label>
-          <label className="check" title="Find the outer border band and redraw it as one clean, solid band">
-            <input
-              type="checkbox"
-              checked={s.border}
-              disabled={!s.removeBackground}
-              onChange={(e) => onChange({ border: e.target.checked })}
-            />
-            Redraw outer border
+          <label className="stack" title="How to treat the design's outer border band">
+            Border
+            <select
+              aria-label="Border mode"
+              value={s.borderMode}
+              disabled={noBorder}
+              onChange={(e) => onChange({ borderMode: e.target.value as CleanupSettings["borderMode"] })}
+            >
+              <option value="redraw">Redraw traced band</option>
+              <option value="ring">Clean ring (separate layer)</option>
+              <option value="off">Off</option>
+            </select>
           </label>
-          <Slider
-            label="Border width adjust"
-            hint="Added to the detected border width. Raise it to cover a ragged inner edge; lower it if it eats into the design."
-            value={s.borderExtra}
-            min={-20}
-            max={60}
-            disabled={!s.removeBackground || !s.border}
-            onChange={(v) => onChange({ borderExtra: v })}
-          />
-          <div className={"color-row" + (!s.removeBackground || !s.border ? " disabled" : "")}>
-            <label className="check inline" title="Untick to choose the border color yourself">
-              <input
-                type="checkbox"
-                checked={s.borderColor === null}
-                onChange={(e) => onChange({ borderColor: e.target.checked ? null : "#1C4062" })}
+
+          {s.borderMode === "redraw" && (
+            <>
+              <Slider
+                label="Border width adjust"
+                hint="Added to the detected border width. Raise it to cover a ragged inner edge; lower it if it eats into the design."
+                value={s.borderExtra}
+                min={-20}
+                max={60}
+                disabled={noBorder}
+                onChange={(v) => onChange({ borderExtra: v })}
               />
-              Border color from image
-            </label>
-            {s.borderColor !== null && (
-              <input
-                type="color"
-                aria-label="Border color"
-                value={s.borderColor}
-                onChange={(e) => onChange({ borderColor: e.target.value.toUpperCase() })}
+              <div className={"color-row" + (noBorder ? " disabled" : "")}>
+                <label className="check inline" title="Untick to choose the border color yourself">
+                  <input
+                    type="checkbox"
+                    checked={s.borderColor === null}
+                    onChange={(e) => onChange({ borderColor: e.target.checked ? null : "#1C4062" })}
+                  />
+                  Border color from image
+                </label>
+                {s.borderColor !== null && (
+                  <input
+                    type="color"
+                    aria-label="Border color"
+                    value={s.borderColor}
+                    onChange={(e) => onChange({ borderColor: e.target.value.toUpperCase() })}
+                  />
+                )}
+              </div>
+            </>
+          )}
+
+          {s.borderMode === "ring" && (
+            <div className={noBorder ? "disabled-block" : ""}>
+              <Slider
+                label="Ring width"
+                hint="Width of the border ring, measured inward from the outline"
+                value={ringW}
+                min={1}
+                max={Math.round(W / 5)}
+                onChange={(v) => onChange({ ringWidth: v })}
               />
-            )}
-          </div>
+              {s.ringWidth === null && (
+                <Slider
+                  label="Border width adjust"
+                  hint="Added to the detected border width for the automatic ring width. Raise it if the old border still peeks out inside the ring."
+                  value={s.borderExtra}
+                  min={-20}
+                  max={60}
+                  onChange={(v) => onChange({ borderExtra: v })}
+                />
+              )}
+              <p className="fine top" data-testid="ring-size">
+                {ringW} px = {real(ringW)} at {printWidthIn} in wide{" "}
+                {s.ringWidth === null ? (
+                  <span className="muted">(detected)</span>
+                ) : (
+                  <button className="link" onClick={() => onChange({ ringWidth: null })} title="Go back to the detected border width">
+                    Use detected width
+                  </button>
+                )}
+              </p>
+              <h4>Ring color</h4>
+              <ColorPicker
+                label="Ring"
+                value={ringColor}
+                palette={palette.colors}
+                onChange={(hex) => onChange({ borderColor: hex })}
+                onPick={() => onPick((hex) => onChange({ borderColor: hex }))}
+              />
+              {s.borderColor !== null && (
+                <button className="link" onClick={() => onChange({ borderColor: null })}>
+                  Use color from image
+                </button>
+              )}
+              <label className="check gap-top" title="Trim the artwork to the ring's inner edge, so nothing pokes out under the ring">
+                <input type="checkbox" checked={s.clipInside} onChange={(e) => onChange({ clipInside: e.target.checked })} />
+                Clip artwork inside border
+              </label>
+              <label className="check" title="Add a second, thinner ring just inside the border">
+                <input type="checkbox" checked={s.ring2} onChange={(e) => onChange({ ring2: e.target.checked })} />
+                Second ring
+              </label>
+              {s.ring2 && (
+                <>
+                  <Slider
+                    label="Second ring width"
+                    hint="Width of the inner ring"
+                    value={s.ring2Width}
+                    min={1}
+                    max={Math.round(W / 20)}
+                    onChange={(v) => onChange({ ring2Width: v })}
+                  />
+                  <p className="fine top">{s.ring2Width} px = {real(s.ring2Width)}</p>
+                  <Slider
+                    label="Gap"
+                    hint="Space between the border ring and the second ring"
+                    value={s.ring2Gap}
+                    min={0}
+                    max={Math.round(W / 15)}
+                    onChange={(v) => onChange({ ring2Gap: v })}
+                  />
+                  <ColorPicker
+                    label="Second ring"
+                    value={s.ring2Color}
+                    palette={palette.colors}
+                    onChange={(hex) => onChange({ ring2Color: hex })}
+                    onPick={() => onPick((hex) => onChange({ ring2Color: hex }))}
+                  />
+                </>
+              )}
+            </div>
+          )}
           {result?.outline && (
             <p className="fine" data-testid="outline-info">
               Outline: {result.outline}
-              {result.borderWidth ? ` · border ${result.borderWidth} px` : ""}
+              {result.borderWidth ? ` · ${s.borderMode === "ring" ? "ring" : "border"} ${result.borderWidth} px` : ""}
             </p>
           )}
         </section>
@@ -236,6 +341,13 @@ export default function CleanupPanel({ settings: s, onChange, onReset, palettes,
             step={5}
             onChange={(v) => onChange({ curveSmoothness: v })}
           />
+          <label
+            className="check"
+            title="Cut every shape out of the shapes underneath, so no two shapes overlap and each visible area is exactly one shape"
+          >
+            <input type="checkbox" checked={s.flatten} onChange={(e) => onChange({ flatten: e.target.checked })} />
+            Flatten overlaps
+          </label>
         </section>
 
         {result && (
