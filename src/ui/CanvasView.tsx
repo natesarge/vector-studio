@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SourceImage } from "../lib/loadImage";
+import type { TraceResult } from "../pipeline/types";
+import { previewSvg } from "../export/svg";
+
+export type ViewMode = "original" | "result" | "side" | "slider";
 
 /** Where the image sits on screen: screenPoint = imagePoint * scale + (x, y). */
 interface View {
@@ -12,74 +16,48 @@ const MIN_SCALE = 0.02;
 const MAX_SCALE = 64;
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
-interface Props {
-  image: SourceImage;
-  checkerboard: boolean;
-}
-
-/** The big central canvas: shows the image with mouse-wheel zoom and drag-to-pan. */
-export default function CanvasView({ image, checkerboard }: Props) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
-  const [dragging, setDragging] = useState(false);
-
-  /** Scale and centre the image so it fills the viewport with a small margin. */
-  const fit = useCallback(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const { width, height } = el.getBoundingClientRect();
-    const margin = 32;
-    const bar = 40; // keep the zoom bar at the bottom from covering the picture
-    const usable = height - bar;
-    const scale = clampScale(
-      Math.min((width - margin * 2) / image.width, (usable - margin * 2) / image.height),
-    );
-    setView({
-      scale,
-      x: (width - image.width * scale) / 2,
-      y: (usable - image.height * scale) / 2,
-    });
-  }, [image]);
-
-  /** Zoom by `factor`, keeping the image point under (cx, cy) fixed on screen. */
-  const zoomAt = useCallback((factor: number, cx?: number, cy?: number) => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const px = cx ?? r.width / 2;
-    const py = cy ?? r.height / 2;
-    setView((v) => {
-      const scale = clampScale(v.scale * factor);
-      const k = scale / v.scale;
-      return { scale, x: px - (px - v.x) * k, y: py - (py - v.y) * k };
-    });
-  }, []);
-
-  const setScale = useCallback(
-    (scale: number) => zoomAt(scale / view.scale),
-    [view.scale, zoomAt],
-  );
-
-  // Draw the picture and fit it whenever a new image is opened.
+/** The original picture, drawn once onto a canvas. */
+function OriginalLayer({ image, dim }: { image: SourceImage; dim?: boolean }) {
+  const ref = useRef<HTMLCanvasElement>(null);
   useLayoutEffect(() => {
-    const c = canvasRef.current!;
+    const c = ref.current!;
     c.width = image.width;
     c.height = image.height;
     c.getContext("2d")!.drawImage(image.bitmap, 0, 0);
-    fit();
-  }, [image, fit]);
+  }, [image]);
+  return <canvas ref={ref} className={"layer original-layer" + (dim ? " dim" : "")} />;
+}
+
+interface PaneProps {
+  kind: "original" | "result" | "slider";
+  label?: string;
+  image: SourceImage;
+  markup: string;
+  view: View;
+  setView: React.Dispatch<React.SetStateAction<View>>;
+  zoomAt: (el: HTMLElement, factor: number, cx?: number, cy?: number) => void;
+  onFit: () => void;
+  checkerboard: boolean;
+  outlines: boolean;
+  paneRef?: React.Ref<HTMLDivElement>;
+}
+
+/** One view of the artwork. Side-by-side mode shows two of these in step. */
+function Pane({ kind, label, image, markup, view, setView, zoomAt, onFit, checkerboard, outlines, paneRef }: PaneProps) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [split, setSplit] = useState(0.5); // slider position, 0..1 across the image
 
   // Mouse wheel = zoom at the cursor. Registered by hand because React's wheel
   // listener is "passive" and cannot stop the page from scrolling.
   useEffect(() => {
-    const el = viewportRef.current!;
+    const el = ref.current!;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const r = el.getBoundingClientRect();
       // Trackpad pinch arrives as ctrl+wheel with small deltas; make it stronger.
       const speed = e.ctrlKey ? 0.01 : 0.0015;
-      zoomAt(Math.exp(-e.deltaY * speed), e.clientX - r.left, e.clientY - r.top);
+      zoomAt(el, Math.exp(-e.deltaY * speed), e.clientX - r.left, e.clientY - r.top);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -105,45 +83,157 @@ export default function CanvasView({ image, checkerboard }: Props) {
     setDragging(false);
   };
 
+  // Dragging the before/after divider.
+  const onSplitMove = (e: React.PointerEvent) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const r = ref.current!.getBoundingClientRect();
+    const imgX = (e.clientX - r.left - view.x) / view.scale;
+    setSplit(Math.min(1, Math.max(0, imgX / image.width)));
+  };
+
+  const hasResult = markup !== "";
+  const showOriginal = kind !== "result" || !hasResult;
+  const showResult = kind !== "original" && hasResult;
+  const splitX = view.x + split * image.width * view.scale;
+
+  return (
+    <div
+      ref={(el) => {
+        ref.current = el;
+        if (typeof paneRef === "function") paneRef(el);
+        else if (paneRef) paneRef.current = el;
+      }}
+      className={"viewport" + (dragging ? " dragging" : "")}
+      data-pane={kind}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onDoubleClick={onFit}
+    >
+      <div
+        className={"artboard" + (checkerboard ? " checker" : "")}
+        style={{
+          width: image.width,
+          height: image.height,
+          transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+          // Keep pixels crisp when zoomed far in, smooth when zoomed out.
+          imageRendering: view.scale > 3 ? "pixelated" : "auto",
+        }}
+      >
+        {showOriginal && <OriginalLayer image={image} dim={kind === "result"} />}
+        {showResult && (
+          <div
+            className={"layer result-layer" + (outlines ? " outlines" : "")}
+            style={kind === "slider" ? { clipPath: `inset(0 0 0 ${split * 100}%)` } : undefined}
+            // The markup is built by us from traced shapes, never from user text.
+            dangerouslySetInnerHTML={{ __html: markup }}
+          />
+        )}
+      </div>
+
+      {kind === "slider" && hasResult && (
+        <div
+          className="split-handle"
+          style={{ left: splitX }}
+          role="slider"
+          aria-label="Before / after divider"
+          aria-valuenow={Math.round(split * 100)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          title="Drag to compare the original (left) with the result (right)"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={onSplitMove}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          <span className="split-knob">◂ ▸</span>
+        </div>
+      )}
+      {label && <span className="pane-label">{label}</span>}
+    </div>
+  );
+}
+
+interface Props {
+  image: SourceImage;
+  result: TraceResult | null;
+  mode: ViewMode;
+  checkerboard: boolean;
+  outlines: boolean;
+}
+
+/** The big central area: one or two panes plus the zoom buttons. */
+export default function CanvasView({ image, result, mode, checkerboard, outlines }: Props) {
+  const firstPane = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
+  const markup = useMemo(() => (result ? previewSvg(result) : ""), [result]);
+
+  /** Scale and centre the image so it fills a pane with a small margin. */
+  const fit = useCallback(() => {
+    const el = firstPane.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const margin = 32;
+    const bar = 40; // keep the zoom bar at the bottom from covering the picture
+    const usable = height - bar;
+    const scale = clampScale(
+      Math.min((width - margin * 2) / image.width, (usable - margin * 2) / image.height),
+    );
+    setView({
+      scale,
+      x: (width - image.width * scale) / 2,
+      y: (usable - image.height * scale) / 2,
+    });
+  }, [image]);
+
+  /** Zoom by `factor`, keeping the image point under (cx, cy) fixed on screen. */
+  const zoomAt = useCallback((el: HTMLElement, factor: number, cx?: number, cy?: number) => {
+    const r = el.getBoundingClientRect();
+    const px = cx ?? r.width / 2;
+    const py = cy ?? r.height / 2;
+    setView((v) => {
+      const scale = clampScale(v.scale * factor);
+      const k = scale / v.scale;
+      return { scale, x: px - (px - v.x) * k, y: py - (py - v.y) * k };
+    });
+  }, []);
+  const zoomButton = (factor: number) => firstPane.current && zoomAt(firstPane.current, factor);
+
+  // Fit when a new image opens or the layout changes (one pane <-> two panes).
+  const twoPanes = mode === "side";
+  useLayoutEffect(fit, [fit, twoPanes]);
+
+  const common = { image, markup, view, setView, zoomAt, onFit: fit, checkerboard, outlines };
   return (
     <div className="canvas-area">
-      <div
-        ref={viewportRef}
-        className={"viewport" + (dragging ? " dragging" : "")}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onDoubleClick={fit}
-      >
-        <div
-          className={"artboard" + (checkerboard ? " checker" : "")}
-          style={{
-            width: image.width,
-            height: image.height,
-            transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
-            // Keep pixels crisp when zoomed far in, smooth when zoomed out.
-            imageRendering: view.scale > 3 ? "pixelated" : "auto",
-          }}
-        >
-          <canvas ref={canvasRef} />
-        </div>
+      <div className="panes">
+        {mode === "side" ? (
+          <>
+            <Pane {...common} kind="original" label="Original" paneRef={firstPane} />
+            <Pane {...common} kind="result" label="Result" />
+          </>
+        ) : (
+          <Pane {...common} kind={mode} paneRef={firstPane} />
+        )}
       </div>
 
       <div className="zoom-bar" role="toolbar" aria-label="Zoom">
-        <button onClick={() => zoomAt(1 / 1.25)} title="Zoom out" aria-label="Zoom out">
+        <button onClick={() => zoomButton(1 / 1.25)} title="Zoom out" aria-label="Zoom out">
           −
         </button>
         <span className="zoom-value" data-testid="zoom-value">
           {Math.round(view.scale * 100)}%
         </span>
-        <button onClick={() => zoomAt(1.25)} title="Zoom in" aria-label="Zoom in">
+        <button onClick={() => zoomButton(1.25)} title="Zoom in" aria-label="Zoom in">
           +
         </button>
         <button onClick={fit} title="Fit the image to the window (or double-click)">
           Fit
         </button>
-        <button onClick={() => setScale(1)} title="Actual size">
+        <button onClick={() => zoomButton(1 / view.scale)} title="Actual size">
           100%
         </button>
       </div>
