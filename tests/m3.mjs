@@ -244,7 +244,7 @@ await undo();
 assert((await count()) === total - 1, "undo after a re-trace brings the edited drawing back");
 
 // ---- export contains the edits
-const [svgDl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export SVG" }).click()]);
+const [svgDl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export…" }).click().then(() => page.getByTestId("export-go").click())]);
 const svgPath = join(out, "m3-export.svg");
 await svgDl.saveAs(svgPath);
 assert((readFileSync(svgPath, "utf8").match(/<path /g) ?? []).length === total - 1, "exported SVG has the edited shapes");

@@ -115,7 +115,7 @@ await slide("Wave", 0);
 const parts = () => page.locator(".editor-layer [data-text-id] path").count();
 assert((await parts()) === 1, "plain text is one path");
 await slide("Outline width", 8);
-assert((await page.locator(".editor-layer [data-text-id] path").last().getAttribute("stroke")) !== null, "outline adds a stroke");
+assert((await page.locator(".editor-layer [data-text-id] path[stroke]").count()) === 1, "outline adds a stroked layer under the letters");
 await slide("3D depth", 30);
 assert((await parts()) > 10, "3D depth adds stacked copies (" + (await parts()) + " paths)");
 await page.getByLabel("Drop shadow").check();
@@ -131,7 +131,7 @@ await page.getByRole("button", { name: "Undo" }).click();
 assert(Math.abs((await textBox()).x - b0.x) < 2, "undo moves it back");
 
 // export has the text as outlines
-const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export SVG" }).click()]);
+const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export…" }).click().then(() => page.getByTestId("export-go").click())]);
 await dl.saveAs(join(out, "m4-export.svg"));
 const svg = readFileSync(join(out, "m4-export.svg"), "utf8");
 assert(svg.includes('<g id="text-1">') && !svg.includes("<text"), "exported SVG contains the text as outlines, not a <text> element");

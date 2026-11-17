@@ -244,6 +244,8 @@ export function textParts(t: TextObj, layout: TextLayout): TextPart[] {
       parts.push({ d: layout.d, fill: shade, dx: ex * k, dy: ey * k, stroke: shade, strokeWidth: Math.max(t.strokeWidth, 0.5) });
     }
   }
-  parts.push({ d: layout.d, fill: t.fill, dx: 0, dy: 0, ...(outline ? { stroke: t.strokeColor, strokeWidth: t.strokeWidth } : {}) });
+  // The outline is a thick stroke drawn underneath; the letters go on top of it.
+  if (outline) parts.push({ d: layout.d, fill: t.strokeColor, dx: 0, dy: 0, stroke: t.strokeColor, strokeWidth: t.strokeWidth });
+  parts.push({ d: layout.d, fill: t.fill, dx: 0, dy: 0 });
   return parts;
 }

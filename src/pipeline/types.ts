@@ -20,6 +20,14 @@ export interface CleanupSettings {
   paletteSnap: boolean;
   /** Brand colours as "#RRGGBB", used when paletteSnap is on. */
   palette: string[];
+  /** Replace the outer outline with a perfect shape: auto-detect, force one, or leave as traced. */
+  outlineSnap: "auto" | "circle" | "rect" | "off";
+  /** Detect the outer border band and redraw it as one solid band. */
+  border: boolean;
+  /** Extra border width in image pixels, added to the detected width (may be negative). */
+  borderExtra: number;
+  /** Border colour as "#RRGGBB", or null to take it from the image. */
+  borderColor: string | null;
 }
 
 /** One traced shape. Shapes are stacked: later ones are drawn on top. */
@@ -38,6 +46,10 @@ export interface TraceResult {
   colors: string[];
   /** How long the run took, in milliseconds. */
   ms: number;
+  /** What the outer outline was recognised as, e.g. "circle" ("" if background removal is off). */
+  outline: string;
+  /** Width of the redrawn border band in drawing units (0 = none). */
+  borderWidth: number;
 }
 
 export type WorkerRequest =
@@ -89,5 +101,9 @@ export function defaultSettings(srcW: number, srcH: number, palette: string[]): 
     curveSmoothness: 40,
     paletteSnap: false,
     palette,
+    outlineSnap: "auto",
+    border: true,
+    borderExtra: 7,
+    borderColor: null,
   };
 }

@@ -94,6 +94,66 @@ export default function CleanupPanel({ settings: s, onChange, onReset, palettes,
         </section>
 
         <section>
+          <h3>Outline and border</h3>
+          <label className="stack" title="Replace the wobbly outer outline with a perfect shape when it fits">
+            Outline snap
+            <select
+              aria-label="Outline snap"
+              value={s.outlineSnap}
+              disabled={!s.removeBackground}
+              onChange={(e) => onChange({ outlineSnap: e.target.value as CleanupSettings["outlineSnap"] })}
+            >
+              <option value="auto">Auto-detect</option>
+              <option value="circle">Circle / ellipse</option>
+              <option value="rect">Rounded rectangle</option>
+              <option value="off">Off (keep traced outline)</option>
+            </select>
+          </label>
+          <label className="check" title="Find the outer border band and redraw it as one clean, solid band">
+            <input
+              type="checkbox"
+              checked={s.border}
+              disabled={!s.removeBackground}
+              onChange={(e) => onChange({ border: e.target.checked })}
+            />
+            Redraw outer border
+          </label>
+          <Slider
+            label="Border width adjust"
+            hint="Added to the detected border width. Raise it to cover a ragged inner edge; lower it if it eats into the design."
+            value={s.borderExtra}
+            min={-20}
+            max={60}
+            disabled={!s.removeBackground || !s.border}
+            onChange={(v) => onChange({ borderExtra: v })}
+          />
+          <div className={"color-row" + (!s.removeBackground || !s.border ? " disabled" : "")}>
+            <label className="check inline" title="Untick to choose the border color yourself">
+              <input
+                type="checkbox"
+                checked={s.borderColor === null}
+                onChange={(e) => onChange({ borderColor: e.target.checked ? null : "#1C4062" })}
+              />
+              Border color from image
+            </label>
+            {s.borderColor !== null && (
+              <input
+                type="color"
+                aria-label="Border color"
+                value={s.borderColor}
+                onChange={(e) => onChange({ borderColor: e.target.value.toUpperCase() })}
+              />
+            )}
+          </div>
+          {result?.outline && (
+            <p className="fine" data-testid="outline-info">
+              Outline: {result.outline}
+              {result.borderWidth ? ` · border ${result.borderWidth} px` : ""}
+            </p>
+          )}
+        </section>
+
+        <section>
           <h3>Colors</h3>
           <Slider
             label="Smoothing"

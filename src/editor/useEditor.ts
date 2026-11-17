@@ -95,10 +95,17 @@ export function useEditor(result: TraceResult | null) {
   editedRef.current = edited;
   const textsRef = useRef(texts);
   textsRef.current = texts;
+  /** True after a project was loaded, until the trace of its image arrives (which we then ignore). */
+  const loaded = useRef(false);
 
   // A new trace arrived: it becomes the drawing. If the user had already
   // edited shapes, this is recorded as an undo step so nothing is lost.
   useEffect(() => {
+    if (loaded.current) {
+      // A project was just opened: keep its saved drawing instead of the fresh trace.
+      if (result) loaded.current = false;
+      return;
+    }
     if (!result) {
       dispatch({ type: "reset", doc: EMPTY });
       setSelection(new Set());
@@ -137,6 +144,18 @@ export function useEditor(result: TraceResult | null) {
   }, [shapes]);
 
   const setDoc = useCallback((doc: Doc) => dispatch({ type: "set", doc }), []);
+  /** Replace everything with a drawing from a project file (clears undo history). */
+  const loadDoc = useCallback((doc: { shapes: { d: string; fill: string }[]; texts: TextObj[] }, docSize: { width: number; height: number }) => {
+    loaded.current = true;
+    setSize(docSize);
+    setSelection(new Set());
+    setTextId(null);
+    setNodeEdit(false);
+    dispatch({
+      type: "reset",
+      doc: { shapes: doc.shapes.map((s) => ({ id: newId(), d: s.d, fill: s.fill })), texts: doc.texts.map((t) => ({ ...t, id: newId() })) },
+    });
+  }, []);
   const set = (next: DocShape[]) => dispatch({ type: "set", doc: { shapes: next, texts } });
   const preview = (next: DocShape[]) => dispatch({ type: "preview", doc: { shapes: next, texts } });
   const commitPreview = useCallback(() => dispatch({ type: "commit" }), []);
@@ -305,7 +324,7 @@ export function useEditor(result: TraceResult | null) {
 
   return {
     shapes, texts, size, selection, selected, selectionBox, groups, edited,
-    selectedText, regionTool, setRegionTool, setDoc,
+    selectedText, regionTool, setRegionTool, setDoc, loadDoc,
     canUndo: h.past.length > 0 || h.base !== null, canRedo: h.future.length > 0,
     nodeEdit, setNodeEdit, set, preview, commitPreview,
     ...actions,

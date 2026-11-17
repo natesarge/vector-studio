@@ -25,7 +25,8 @@ interface Props {
   onUndo: () => void;
   onRedo: () => void;
   onOpenFile: (file: File) => void;
-  onExportSvg: () => void;
+  onExport: () => void;
+  onSaveProject: () => void;
 }
 
 /** The strip across the top: app name, Open, view modes, toggles and Export. */
@@ -42,13 +43,13 @@ export default function TopBar(p: Props) {
         <span>Caveman Vector Studio</span>
       </div>
 
-      <button className="primary" onClick={() => inputRef.current?.click()}>
-        Open image
+      <button onClick={() => inputRef.current?.click()} title="Open an image, or a saved .cvs.json project">
+        Open…
       </button>
       <input
         ref={inputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept="image/png,image/jpeg,image/webp,.json"
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -57,6 +58,11 @@ export default function TopBar(p: Props) {
         }}
       />
 
+      {p.hasImage && (
+        <button disabled={!p.canExport} onClick={p.onSaveProject} title="Save everything (image, settings, shapes, text) as a .cvs.json project file">
+          Save project
+        </button>
+      )}
       {p.fileLabel && <span className="file-label">{p.fileLabel}</span>}
 
       <div className="spacer" />
@@ -91,8 +97,8 @@ export default function TopBar(p: Props) {
             <input type="checkbox" checked={p.checkerboard} onChange={p.onToggleCheckerboard} />
             Checkerboard
           </label>
-          <button disabled={!p.canExport} onClick={p.onExportSvg} title="Save the result as an SVG vector file">
-            Export SVG
+          <button className="primary" disabled={!p.canExport} onClick={p.onExport} title="Save as SVG, PDF, PNG or a cut line">
+            Export…
           </button>
         </>
       )}

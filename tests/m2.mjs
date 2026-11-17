@@ -25,6 +25,7 @@ const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 const errors = [];
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 page.on("pageerror", (e) => errors.push(String(e)));
+page.on("console", (m) => m.text().startsWith("[pipeline]") && console.log("   " + m.text()));
 await page.goto(url);
 
 const done = () => page.waitForSelector('[data-testid="status"][data-status="done"]', { timeout: 180000 });
@@ -41,12 +42,12 @@ for (const file of images) {
   await busy().catch(() => {});
   await done();
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
-  const info = await page.locator(".panel .fine").last().innerText();
+  const info = await page.locator(".panel.left .fine").last().innerText() + " | " + (await page.getByTestId("outline-info").innerText().catch(() => ""));
   console.log(`\n== ${file}: ${secs}s wall, ${info}`);
   await page.screenshot({ path: join(out, `m2-${name}-side.png`) });
 
   // Export through the real button and keep the file.
-  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export SVG" }).click()]);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export…" }).click().then(() => page.getByTestId("export-go").click())]);
   const svgPath = join(out, `m2-${name}.svg`);
   await download.saveAs(svgPath);
   const svg = readFileSync(svgPath, "utf8");
@@ -56,7 +57,7 @@ for (const file of images) {
   console.log("   colors: " + colors.join(" "));
 
   // Comparison sheet: original | Python | ours, on a checkerboard.
-  const pyPath = join(out, "python-m2", name + ".svg");
+  const pyPath = join(out, "python", name + ".svg");
   const uri = (p, mime) => `data:${mime};base64,` + readFileSync(p).toString("base64");
   const cells = [
     ["Original", uri(join(imgDir, file), file.endsWith(".jpg") ? "image/jpeg" : "image/png")],
@@ -106,7 +107,8 @@ const before = await page.locator(".editor-layer path[data-shape-id]").count();
 await page.getByLabel("Number of colors").fill("3");
 await busy(); await done();
 const after = await page.locator('[data-testid="result-colors"] .swatch').count();
-assert(after <= 3, `changing "Number of colors" to 3 re-ran the job (${after} colors, was ${before} shapes)`);
+assert(after <= 4, // 3 colours plus the redrawn border
+  `changing "Number of colors" to 3 re-ran the job (${after} colors, was ${before} shapes)`);
 await page.getByLabel("Remove background").uncheck();
 await busy(); await done();
 await page.screenshot({ path: join(out, "m2-3colors-nobg.png") });

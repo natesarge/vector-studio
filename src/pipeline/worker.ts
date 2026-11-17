@@ -6,7 +6,8 @@
 
 /// <reference lib="webworker" />
 import { hexToRgb, nearestPaletteColor, rgbToHex, type RGB } from "./color";
-import { backgroundMaskSoft, upsampleMask } from "./background";
+import { backgroundMaskSoft } from "./background";
+import { findBorder, fitName, renderFit, snapOutline } from "./outline";
 import type { Tick } from "./filters";
 import { binOf, mergeShades, quantize, type Quantized } from "./kmeans";
 import { voteLabels } from "./labels";
@@ -35,6 +36,8 @@ async function step<T>(name: string, key: string, compute: () => Promise<T> | T)
 }
 
 const CANCELLED = Symbol("cancelled");
+/** Level of the soft background mask that separates design from background (see background.ts). */
+const MASK_LEVEL = 0.566;
 
 // ------------------------------------------------------------ messages
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
@@ -95,7 +98,13 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
   // Progress reporting + cancellation. Each stage owns a slice of the bar.
   let lastYield = performance.now();
   let stageName = "", stageFrom = 0, stageTo = 0;
+  // How long each stage took, for the console (handy when tuning speed).
+  const timings: string[] = [];
+  let stageStart = t0;
   const stage = (name: string, from: number, to: number) => {
+    const now = performance.now();
+    if (stageName) timings.push(`${stageName} ${Math.round(now - stageStart)}ms`);
+    stageStart = now;
     stageName = name; stageFrom = from; stageTo = to;
     post({ type: "progress", id, stage: name, fraction: from });
   };
@@ -125,7 +134,8 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
 
   // 4. Smooth the boundaries between colours (and enlarge to working size).
   stage("Smoothing edges", 0.5, 0.7);
-  const labels = await step("labels", `${quantKey}|${remap.join(",")}`, () => {
+  const labelsKey = `${quantKey}|${remap.join(",")}`;
+  const labels = await step("labels", labelsKey, () => {
     const base = new Uint8Array(n);
     for (let i = 0; i < n; i++)
       base[i] = remap[q.binLabel[binOf(smoothed[i * 3], smoothed[i * 3 + 1], smoothed[i * 3 + 2])]];
@@ -133,23 +143,57 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
   });
 
   // 5. Cut out the design (remove background + shadow).
-  stage("Removing background", 0.7, 0.78);
+  stage("Removing background", 0.7, 0.74);
   await pause();
-  const mask = await step("mask", `${im.id}|${s.removeBackground}|${s.bgTolerance}`, () => {
-    if (!s.removeBackground) return null;
+  const maskKey = `${im.id}|${s.removeBackground}|${s.bgTolerance}`;
+  const soft = await step("soft", maskKey, () =>
     // Tolerance is per working pixel in vectorize.py; base pixels are `scale` times bigger.
-    const soft = backgroundMaskSoft(rgb, bw, bh, s.bgTolerance * scale);
-    return soft && upsampleMask(soft, bw, bh, W, H);
-  });
+    s.removeBackground ? backgroundMaskSoft(rgb, bw, bh, s.bgTolerance * scale) : null);
 
-  // 6. Final colours: each region's real median colour, optionally snapped to a palette.
-  stage("Picking colors", 0.78, 0.8);
-  const hist = new Uint32Array(k * 3 * 256);
-  const total = new Uint32Array(k);
+  // 6. Snap the outer outline to a perfect circle / rounded rectangle if it fits.
+  stage("Shaping the outline", 0.74, 0.77);
+  const fitKey = `${maskKey}|${s.outlineSnap}`;
+  const fit = soft && (await step("fit", fitKey, () => snapOutline(soft, MASK_LEVEL, bw, bh, s.outlineSnap)));
+  const mask = fit && (await step("maskW", fitKey, () => renderFit(fit, sizes)));
+
+  // 7. Find the outer border band and redraw it as one solid band.
+  let finalLabels = labels, kOut = k, borderLabel = -1, borderWidth = 0;
+  let borderRgb: RGB | null = null;
+  if (soft && fit && mask && s.border) {
+    stage("Finding the border", 0.77, 0.8);
+    await pause();
+    const found = await step("border", `${labelsKey}|${maskKey}`, () => {
+      const baseLabels = new Uint8Array(n), raw = new Uint8Array(n);
+      for (let y = 0; y < bh; y++) {
+        const Y = Math.min(H - 1, Math.floor((y + 0.5) * scale));
+        for (let x = 0; x < bw; x++) {
+          const i = y * bw + x;
+          baseLabels[i] = labels[Y * W + Math.min(W - 1, Math.floor((x + 0.5) * scale))];
+          raw[i] = soft[i] > MASK_LEVEL ? 1 : 0;
+        }
+      }
+      return findBorder(baseLabels, k, raw, rgb, bw, bh);
+    });
+    if (found) {
+      borderWidth = Math.max(1, found.width + s.borderExtra);
+      const inner = await step("inner", `${fitKey}|${labelsKey}|${borderWidth}`, () => renderFit(fit, sizes, borderWidth));
+      borderLabel = k;
+      kOut = k + 1;
+      finalLabels = new Uint8Array(labels);
+      // The band, and everything outside the design (so no fringe shows at the edge).
+      for (let i = 0; i < W * H; i++) if (!mask[i] || !inner[i]) finalLabels[i] = borderLabel;
+      borderRgb = s.borderColor ? hexToRgb(s.borderColor) : found.color;
+    }
+  }
+
+  // 8. Final colours: each region's real median colour, optionally snapped to a palette.
+  stage("Picking colors", 0.8, 0.82);
+  const hist = new Uint32Array(kOut * 3 * 256);
+  const total = new Uint32Array(kOut);
   for (let y = 0; y < bh; y++) {
     const Y = Math.min(H - 1, Math.floor((y + 0.5) * scale));
     for (let x = 0; x < bw; x++) {
-      const lab = labels[Y * W + Math.min(W - 1, Math.floor((x + 0.5) * scale))];
+      const lab = finalLabels[Y * W + Math.min(W - 1, Math.floor((x + 0.5) * scale))];
       const p = (y * bw + x) * 3, o = lab * 768;
       hist[o + rgb[p]]++; hist[o + 256 + rgb[p + 1]]++; hist[o + 512 + rgb[p + 2]]++;
       total[lab]++;
@@ -157,7 +201,13 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
   }
   const brand = s.paletteSnap && s.palette.length ? s.palette.map(hexToRgb) : null;
   const pal: RGB[] = [];
-  for (let i = 0; i < k; i++) {
+  for (let i = 0; i < kOut; i++) {
+    if (i === borderLabel && borderRgb) {
+      // A colour the user typed is used exactly; a detected one may be snapped.
+      pal.push(brand && !s.borderColor ? nearestPaletteColor(borderRgb, brand) : borderRgb);
+      total[i] = Math.max(1, total[i]);
+      continue;
+    }
     const med: RGB = [0, 0, 0];
     for (let ch = 0; ch < 3; ch++) {
       let acc = 0, v = 0;
@@ -170,13 +220,13 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
   // Flat-colour picture with transparency outside the design.
   const flat = new Uint8Array(W * H * 4);
   for (let i = 0; i < W * H; i++) {
-    const c = pal[labels[i]];
+    const c = pal[finalLabels[i]];
     flat[i * 4] = c[0]; flat[i * 4 + 1] = c[1]; flat[i * 4 + 2] = c[2];
     flat[i * 4 + 3] = !mask || mask[i] ? 255 : 0;
   }
 
-  // 7. Trace to vector shapes.
-  stage("Tracing shapes", 0.8, 1);
+  // 9. Trace to vector shapes.
+  stage("Tracing shapes", 0.82, 1);
   await pause();
   const shapes = await trace(flat, W, H, s);
 
@@ -188,7 +238,7 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
     if (!fixed) {
       const c = hexToRgb(sh.fill);
       let bestD = Infinity, bestC = c;
-      for (let i = 0; i < k; i++) {
+      for (let i = 0; i < kOut; i++) {
         if (!total[i]) continue;
         const d = Math.hypot(c[0] - pal[i][0], c[1] - pal[i][1], c[2] - pal[i][2]);
         if (d < bestD) { bestD = d; bestC = pal[i]; }
@@ -202,5 +252,10 @@ async function run(id: number, s: CleanupSettings): Promise<TraceResult> {
   const use = new Map<string, number>();
   for (const sh of shapes) use.set(sh.fill, (use.get(sh.fill) ?? 0) + 1);
   const colors = [...use.keys()].sort((a, b) => use.get(b)! - use.get(a)!);
-  return { width: W, height: H, shapes, colors, ms: Math.round(performance.now() - t0) };
+  stage("Done", 1, 1);
+  console.debug("[pipeline] " + timings.join(" · "));
+  return {
+    width: W, height: H, shapes, colors, ms: Math.round(performance.now() - t0),
+    outline: fit ? fitName(fit) : "", borderWidth: Math.round(borderWidth * scale),
+  };
 }

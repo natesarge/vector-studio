@@ -75,25 +75,3 @@ export function backgroundMaskSoft(rgb: Uint8Array, w: number, h: number, tolera
   gaussianBlur(soft, w, h, 3);
   return soft;
 }
-
-/**
- * Enlarge a soft mask to working size and make it yes/no. The threshold is a
- * little above one half, which trims the faint halo around the design's edge
- * (vectorize.py does this by eroding the mask slightly).
- */
-export function upsampleMask(soft: Float32Array, w: number, h: number, W: number, H: number, threshold = 0.566): Uint8Array {
-  const out = new Uint8Array(W * H);
-  const kx = w / W, ky = h / H;
-  for (let Y = 0; Y < H; Y++) {
-    const fy = Math.max(0, Math.min(h - 1, (Y + 0.5) * ky - 0.5));
-    const y0 = Math.floor(fy), y1 = Math.min(h - 1, y0 + 1), wy = fy - y0;
-    for (let X = 0; X < W; X++) {
-      const fx = Math.max(0, Math.min(w - 1, (X + 0.5) * kx - 0.5));
-      const x0 = Math.floor(fx), x1 = Math.min(w - 1, x0 + 1), wx = fx - x0;
-      const top = soft[y0 * w + x0] + (soft[y0 * w + x1] - soft[y0 * w + x0]) * wx;
-      const bot = soft[y1 * w + x0] + (soft[y1 * w + x1] - soft[y1 * w + x0]) * wx;
-      out[Y * W + X] = top + (bot - top) * wy > threshold ? 1 : 0;
-    }
-  }
-  return out;
-}

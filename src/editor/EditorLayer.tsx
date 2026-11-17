@@ -237,7 +237,7 @@ export default function EditorLayer({ ed, unit, outlines, showShapes, onRegion, 
                 key={i} d={part.d} fill={part.fill} opacity={part.opacity}
                 transform={part.dx || part.dy ? `translate(${part.dx} ${part.dy})` : undefined}
                 stroke={part.stroke} strokeWidth={part.strokeWidth ? part.strokeWidth * 2 : undefined}
-                strokeLinejoin="round" paintOrder="stroke"
+                strokeLinejoin="round"
               />
             ))}
             {isSel && <rect className="text-box" x={b.x} y={b.y} width={b.w} height={b.h} data-testid="text-box" />}

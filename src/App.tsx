@@ -14,7 +14,10 @@ import { usePalettes } from "./lib/palettes";
 import { defaultSettings, type CleanupSettings } from "./pipeline/types";
 import { useVectorizer } from "./pipeline/useVectorizer";
 import { newId, useEditor } from "./editor/useEditor";
-import { baseName, downloadText, exportSvg } from "./export/svg";
+import { baseName, downloadBlob, downloadText, exportCutLine, exportSvg } from "./export/svg";
+import { svgToPdf, svgToPng } from "./export/raster";
+import { PROJECT_EXT, readProject, saveProject } from "./export/project";
+import ExportDialog, { type ExportOptions } from "./ui/ExportDialog";
 
 /** True when the keyboard focus is in a box where typing should not trigger shortcuts. */
 const isTyping = (t: EventTarget | null) =>
@@ -36,6 +39,7 @@ export default function App() {
   const palettes = usePalettes();
   const [rightTab, setRightTab] = useState<"shapes" | "text">("shapes");
   const [fontPicker, setFontPicker] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [textNote, setTextNote] = useState<string | null>(null);
   /** Font used for new text: whatever the user chose last. */
   const lastFont = useRef(DEFAULT_FONT);
@@ -53,10 +57,25 @@ export default function App() {
   const job = useVectorizer(image, runSettings);
   // The traced shapes become an editable drawing with undo/redo.
   const ed = useEditor(job.result);
+  const edRef = useRef(ed);
+  edRef.current = ed;
 
-  /** Open an image from any source (button, drag-drop, paste). */
+  /** Open an image or a saved project from any source (button, drag-drop, paste). */
   const openFile = useCallback(async (file: Blob, name = "pasted image") => {
     try {
+      if (name.toLowerCase().endsWith(".json")) {
+        // A saved project: restore the image, settings, drawing and fonts.
+        const { file: proj, imageBlob } = await readProject(await file.text());
+        const img = await loadImage(imageBlob, proj.image.name);
+        setImage((old) => {
+          old?.bitmap.close();
+          return img;
+        });
+        setSettings({ ...defaultSettings(img.width, img.height, []), ...proj.settings });
+        edRef.current.loadDoc({ shapes: proj.shapes, texts: proj.texts ?? [] }, proj.size);
+        setError(null);
+        return;
+      }
       const img = await loadImage(file, name);
       setImage((old) => {
         old?.bitmap.close(); // free the previous image's memory
@@ -87,8 +106,6 @@ export default function App() {
   }, [openFile]);
 
   // Keyboard shortcuts for editing.
-  const edRef = useRef(ed);
-  edRef.current = ed;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const ed = edRef.current;
@@ -135,8 +152,10 @@ export default function App() {
     dragDepth.current = 0;
     setDropHover(false);
     const f = imageFromDataTransfer(e.dataTransfer);
+    const any = e.dataTransfer.files[0];
     if (f) void openFile(f, f.name);
-    else setError("Drop a PNG, JPG or WebP image file.");
+    else if (any?.name.toLowerCase().endsWith(".json")) void openFile(any, any.name);
+    else setError("Drop a PNG, JPG or WebP image, or a .cvs.json project file.");
   };
 
   const fileLabel = image
@@ -189,6 +208,27 @@ export default function App() {
       return font ? [textParts(t, getLayout(t, font))] : [];
     });
 
+  // ---- export and project files
+  const drawing = () => ({ ...ed.size, shapes: ed.shapes, texts: textOutlines() });
+  const doExport = async (o: ExportOptions) => {
+    if (!image) return;
+    const name = baseName(image.name);
+    const border = o.border ? { width: o.borderWidth, color: o.borderColor } : null;
+    if (o.format === "cut") return downloadText(name + "-cutline.svg", exportCutLine(drawing(), border?.width ?? 0), "image/svg+xml");
+    const svg = exportSvg(drawing(), border);
+    if (o.format === "svg") downloadText(name + ".svg", svg, "image/svg+xml");
+    else if (o.format === "png") downloadBlob(name + ".png", await svgToPng(svg, o.widthIn * o.dpi, o.dpi));
+    else downloadBlob(name + ".pdf", await svgToPdf(svg, o.widthIn));
+  };
+  const saveProjectFile = () => {
+    if (!image || !settings) return;
+    downloadText(
+      baseName(image.name) + PROJECT_EXT,
+      saveProject({ image, settings, size: ed.size, shapes: ed.shapes, texts: ed.texts, palette: palettes.active }),
+      "application/json",
+    );
+  };
+
   /** Start the eyedropper. The palette dialog hides meanwhile and returns after. */
   const startPick = (use: (hex: string) => void) => {
     setPick({ use, reopenManager: managing });
@@ -227,10 +267,8 @@ export default function App() {
         onUndo={ed.undo}
         onRedo={ed.redo}
         onOpenFile={(f) => void openFile(f, f.name)}
-        onExportSvg={() => {
-          if (hasShapes && image)
-            downloadText(baseName(image.name) + ".svg", exportSvg({ ...ed.size, shapes: ed.shapes, texts: textOutlines() }), "image/svg+xml");
-        }}
+        onExport={() => setExporting(true)}
+        onSaveProject={saveProjectFile}
       />
 
       {shownError && (
@@ -292,7 +330,7 @@ export default function App() {
               <h1>Turn an image into clean vector art</h1>
               <p>
                 Drop a logo, sticker or patch image here, paste it with <kbd>Ctrl</kbd>+<kbd>V</kbd>,
-                or choose a file.
+                or choose a file. Saved projects (.cvs.json) open the same way.
               </p>
               <button className="primary large" onClick={() => pickerRef.current?.click()}>
                 Open image
@@ -300,7 +338,7 @@ export default function App() {
               <input
                 ref={pickerRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/png,image/jpeg,image/webp,.json"
                 hidden
                 onChange={(e) => {
                   const f = e.target.files?.[0];
@@ -314,6 +352,10 @@ export default function App() {
         )}
         {dropHover && <div className="drop-overlay">Drop the image to open it</div>}
       </main>
+
+      {exporting && (
+        <ExportDialog width={ed.size.width} height={ed.size.height} onExport={doExport} onClose={() => setExporting(false)} />
+      )}
 
       {fontPicker && (
         <FontPicker

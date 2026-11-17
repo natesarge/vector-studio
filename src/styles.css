@@ -282,3 +282,15 @@ button.wide.first { margin-top: 0; }
 .font-results li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .font-results li:last-child { border-bottom: none; }
 .font-results select { flex: none; width: 76px; }
+
+/* ================= milestone 5 ================= */
+.check.inline { margin: 0; flex: 1; }
+.color-row.disabled, select:disabled { opacity: 0.45; }
+.panel .stack select { width: 100%; }
+.form-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.form-row label { display: flex; align-items: center; gap: 6px; }
+.form-row input[type="number"] { width: 76px; }
+.form-row input[type="color"] { width: 34px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; }
+.form-row.end { justify-content: flex-end; margin-top: 6px; }
+.modal .check { margin: 4px 0 0; }
+.topbar { gap: 8px; }
