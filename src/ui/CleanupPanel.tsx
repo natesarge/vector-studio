@@ -1,5 +1,5 @@
 import type { CleanupSettings, TraceResult } from "../pipeline/types";
-import type { Palette } from "../lib/palettes";
+import type { Palettes } from "../lib/palettes";
 
 interface SliderProps {
   label: string;
@@ -38,7 +38,10 @@ interface Props {
   settings: CleanupSettings;
   onChange: (patch: Partial<CleanupSettings>) => void;
   onReset: () => void;
-  palette: Palette;
+  palettes: Palettes;
+  onManagePalettes: () => void;
+  /** True once shapes have been edited by hand (re-tracing would replace them). */
+  edited: boolean;
   result: TraceResult | null;
   busy: boolean;
   stage: string;
@@ -46,7 +49,8 @@ interface Props {
 }
 
 /** Left panel: every setting of the clean-up pipeline, with live preview. */
-export default function CleanupPanel({ settings: s, onChange, onReset, palette, result, busy, stage, fraction }: Props) {
+export default function CleanupPanel({ settings: s, onChange, onReset, palettes, onManagePalettes, edited, result, busy, stage, fraction }: Props) {
+  const palette = palettes.active;
   return (
     <aside className="panel left" aria-label="Clean up">
       <div className="panel-head">
@@ -57,6 +61,12 @@ export default function CleanupPanel({ settings: s, onChange, onReset, palette, 
       </div>
 
       <div className="panel-body">
+        {edited && (
+          <p className="notice" role="note">
+            You have edited shapes. Changing a setting here re-traces the image and replaces your edits (Undo
+            brings them back).
+          </p>
+        )}
         <section>
           <h3>Background</h3>
           <label className="check" title="Cut the design out of its background and drop shadow">
@@ -111,8 +121,21 @@ export default function CleanupPanel({ settings: s, onChange, onReset, palette, 
               checked={s.paletteSnap}
               onChange={(e) => onChange({ paletteSnap: e.target.checked })}
             />
-            Snap to palette: {palette.name}
+            Snap to palette
           </label>
+          <div className="color-row">
+            <select
+              aria-label="Palette"
+              title="Which palette to snap to (also used for the swatch buttons in the Edit panel)"
+              value={palette.id}
+              onChange={(e) => palettes.setActive(e.target.value)}
+            >
+              {palettes.palettes.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <button onClick={onManagePalettes} title="Create, edit, import and export palettes">Manage…</button>
+          </div>
           <div className="swatches" aria-label={palette.name + " palette"}>
             {palette.colors.map((c) => (
               <span key={c} className="swatch small" style={{ background: c }} title={c} />

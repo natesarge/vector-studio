@@ -4,7 +4,7 @@ A free, browser-based tool that turns AI-generated images (logos, stickers, patc
 into clean, editable, print-ready vector art. Everything runs in your browser; your
 images never leave your computer.
 
-**Status:** in development (milestone 2 of 6). Working now: open an image, automatic clean-up and tracing with live settings, before/after views, SVG export.
+**Status:** in development (milestone 3 of 6). Working now: open an image, automatic clean-up and tracing, before/after views, shape editing (select, move, scale, rotate, recolor, merge, node editing, undo/redo), color palettes, defect cleanup, SVG export.
 
 ## Run it locally
 

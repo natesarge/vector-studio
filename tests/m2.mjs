@@ -102,7 +102,7 @@ await page.getByLabel("Outlines").check();
 await page.screenshot({ path: join(out, "m2-outlines.png") });
 await page.getByLabel("Outlines").uncheck();
 
-const before = await page.locator(".result-layer svg path").count();
+const before = await page.locator(".editor-layer path[data-shape-id]").count();
 await page.getByLabel("Number of colors").fill("3");
 await busy(); await done();
 const after = await page.locator('[data-testid="result-colors"] .swatch').count();

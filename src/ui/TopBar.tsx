@@ -18,6 +18,12 @@ interface Props {
   onToggleCheckerboard: () => void;
   outlines: boolean;
   onToggleOutlines: () => void;
+  showShapes: boolean;
+  onToggleShapes: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   onOpenFile: (file: File) => void;
   onExportSvg: () => void;
 }
@@ -57,6 +63,8 @@ export default function TopBar(p: Props) {
 
       {p.hasImage && (
         <>
+          <button disabled={!p.canUndo} onClick={p.onUndo} title="Undo (Ctrl+Z)" aria-label="Undo">↶ Undo</button>
+          <button disabled={!p.canRedo} onClick={p.onRedo} title="Redo (Ctrl+Y)" aria-label="Redo">↷ Redo</button>
           <div className="segmented" role="radiogroup" aria-label="View mode">
             {MODES.map((m) => (
               <button
@@ -74,6 +82,10 @@ export default function TopBar(p: Props) {
           <label className="toggle" title="Show shape outlines instead of filled colors">
             <input type="checkbox" checked={p.outlines} onChange={p.onToggleOutlines} />
             Outlines
+          </label>
+          <label className="toggle" title="Draw a thin line around every individual shape">
+            <input type="checkbox" checked={p.showShapes} onChange={p.onToggleShapes} />
+            Shapes
           </label>
           <label className="toggle" title="Show a checkerboard behind transparent areas">
             <input type="checkbox" checked={p.checkerboard} onChange={p.onToggleCheckerboard} />

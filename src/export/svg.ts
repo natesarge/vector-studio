@@ -1,23 +1,17 @@
-// Building SVG text from traced shapes, and saving files from the browser.
-import type { Shape, TraceResult } from "../pipeline/types";
+// Building SVG text from the drawing, and saving files from the browser.
 
-const pathTag = (s: Shape, withFill: boolean) =>
-  `<path d="${s.d}"${withFill ? ` fill="${s.fill}"` : ""}${s.transform ? ` transform="${s.transform}"` : ""}/>`;
-
-/** Compact SVG for showing on screen (stretched to fit its container). */
-export function previewSvg(r: TraceResult): string {
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.width} ${r.height}" preserveAspectRatio="none">` +
-    r.shapes.map((s) => pathTag(s, true)).join("") +
-    `</svg>`
-  );
+/** The minimum needed to write a file: size plus stacked, filled paths. */
+export interface Drawing {
+  width: number;
+  height: number;
+  shapes: { d: string; fill: string }[];
 }
 
 /**
  * Clean SVG file. Shapes stay in drawing order (later shapes sit on top of
  * earlier ones), and neighbours of the same colour share one <g> group.
  */
-export function exportSvg(r: TraceResult): string {
+export function exportSvg(r: Drawing): string {
   const lines: string[] = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<svg xmlns="http://www.w3.org/2000/svg" width="${r.width}" height="${r.height}" viewBox="0 0 ${r.width} ${r.height}">`,
@@ -27,7 +21,7 @@ export function exportSvg(r: TraceResult): string {
     let j = i;
     while (j < r.shapes.length && r.shapes[j].fill === fill) j++;
     lines.push(`  <g fill="${fill}">`);
-    for (let n = i; n < j; n++) lines.push("    " + pathTag(r.shapes[n], false));
+    for (let n = i; n < j; n++) lines.push(`    <path d="${r.shapes[n].d}"/>`);
     lines.push(`  </g>`);
     i = j;
   }

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SourceImage } from "../lib/loadImage";
-import type { TraceResult } from "../pipeline/types";
-import { previewSvg } from "../export/svg";
+import EditorLayer from "../editor/EditorLayer";
+import type { Editor } from "../editor/useEditor";
+import { rgbToHex } from "../pipeline/color";
 
 export type ViewMode = "original" | "result" | "side" | "slider";
 
@@ -32,7 +33,10 @@ interface PaneProps {
   kind: "original" | "result" | "slider";
   label?: string;
   image: SourceImage;
-  markup: string;
+  ed: Editor;
+  showShapes: boolean;
+  /** When set, the next click picks a colour instead of selecting. */
+  onPickColor: ((hex: string) => void) | null;
   view: View;
   setView: React.Dispatch<React.SetStateAction<View>>;
   zoomAt: (el: HTMLElement, factor: number, cx?: number, cy?: number) => void;
@@ -43,7 +47,7 @@ interface PaneProps {
 }
 
 /** One view of the artwork. Side-by-side mode shows two of these in step. */
-function Pane({ kind, label, image, markup, view, setView, zoomAt, onFit, checkerboard, outlines, paneRef }: PaneProps) {
+function Pane({ kind, label, image, ed, showShapes, onPickColor, view, setView, zoomAt, onFit, checkerboard, outlines, paneRef }: PaneProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [split, setSplit] = useState(0.5); // slider position, 0..1 across the image
@@ -63,24 +67,53 @@ function Pane({ kind, label, image, markup, view, setView, zoomAt, onFit, checke
     return () => el.removeEventListener("wheel", onWheel);
   }, [zoomAt]);
 
-  // Drag to pan.
+  // Drag to pan. A press and release without movement is a "tap" (a click):
+  // it selects the shape under the mouse, or picks a colour in pick mode.
   const last = useRef<{ x: number; y: number } | null>(null);
+  const press = useRef<{ target: Element; x: number; y: number; moved: boolean } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 && e.button !== 1) return;
+    press.current = e.button === 0 ? { target: e.target as Element, x: e.clientX, y: e.clientY, moved: false } : null;
     e.currentTarget.setPointerCapture(e.pointerId);
     last.current = { x: e.clientX, y: e.clientY };
     setDragging(true);
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (!last.current) return;
+    const pr = press.current;
+    if (pr && !pr.moved) {
+      if (Math.hypot(e.clientX - pr.x, e.clientY - pr.y) < 4) return; // still a click
+      pr.moved = true;
+    }
     const dx = e.clientX - last.current.x;
     const dy = e.clientY - last.current.y;
     last.current = { x: e.clientX, y: e.clientY };
-    setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
+    if (!onPickColor) setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
   };
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
+    const pr = press.current;
+    press.current = null;
+    if (last.current && pr && !pr.moved) onTap(pr.target, e);
     last.current = null;
     setDragging(false);
+  };
+  const onTap = (target: Element, e: React.PointerEvent) => {
+    const shapeEl = target.closest("[data-shape-id]");
+    if (onPickColor) {
+      if (shapeEl) return onPickColor(shapeEl.getAttribute("fill")!.toUpperCase());
+      if (target instanceof HTMLCanvasElement) {
+        // Read the pixel of the original picture under the mouse.
+        const r = target.getBoundingClientRect();
+        const x = Math.floor(((e.clientX - r.left) / r.width) * target.width);
+        const y = Math.floor(((e.clientY - r.top) / r.height) * target.height);
+        const px = target.getContext("2d")!.getImageData(x, y, 1, 1).data;
+        return onPickColor(rgbToHex(px[0], px[1], px[2]));
+      }
+      return;
+    }
+    if (kind === "original") return;
+    if (shapeEl) ed.select([Number(shapeEl.getAttribute("data-shape-id"))], e.shiftKey);
+    else if (!target.closest(".handle") && !e.shiftKey) ed.clearSelection();
   };
 
   // Dragging the before/after divider.
@@ -91,7 +124,7 @@ function Pane({ kind, label, image, markup, view, setView, zoomAt, onFit, checke
     setSplit(Math.min(1, Math.max(0, imgX / image.width)));
   };
 
-  const hasResult = markup !== "";
+  const hasResult = ed.shapes.length > 0;
   const showOriginal = kind !== "result" || !hasResult;
   const showResult = kind !== "original" && hasResult;
   const splitX = view.x + split * image.width * view.scale;
@@ -103,13 +136,16 @@ function Pane({ kind, label, image, markup, view, setView, zoomAt, onFit, checke
         if (typeof paneRef === "function") paneRef(el);
         else if (paneRef) paneRef.current = el;
       }}
-      className={"viewport" + (dragging ? " dragging" : "")}
+      className={"viewport" + (dragging ? " dragging" : "") + (onPickColor ? " picking" : "")}
       data-pane={kind}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      onDoubleClick={onFit}
+      onDoubleClick={(e) => {
+        // Double-click empty space to fit; on a shape it is used for node editing.
+        if (!(e.target as Element).closest("[data-shape-id], .sel-outline, .handle")) onFit();
+      }}
     >
       <div
         className={"artboard" + (checkerboard ? " checker" : "")}
@@ -123,11 +159,12 @@ function Pane({ kind, label, image, markup, view, setView, zoomAt, onFit, checke
       >
         {showOriginal && <OriginalLayer image={image} dim={kind === "result"} />}
         {showResult && (
-          <div
-            className={"layer result-layer" + (outlines ? " outlines" : "")}
+          <EditorLayer
+            ed={ed}
+            unit={ed.size.width / (image.width * view.scale)}
+            outlines={outlines}
+            showShapes={showShapes}
             style={kind === "slider" ? { clipPath: `inset(0 0 0 ${split * 100}%)` } : undefined}
-            // The markup is built by us from traced shapes, never from user text.
-            dangerouslySetInnerHTML={{ __html: markup }}
           />
         )}
       </div>
@@ -159,17 +196,18 @@ function Pane({ kind, label, image, markup, view, setView, zoomAt, onFit, checke
 
 interface Props {
   image: SourceImage;
-  result: TraceResult | null;
+  ed: Editor;
   mode: ViewMode;
   checkerboard: boolean;
   outlines: boolean;
+  showShapes: boolean;
+  onPickColor: ((hex: string) => void) | null;
 }
 
 /** The big central area: one or two panes plus the zoom buttons. */
-export default function CanvasView({ image, result, mode, checkerboard, outlines }: Props) {
+export default function CanvasView({ image, ed, mode, checkerboard, outlines, showShapes, onPickColor }: Props) {
   const firstPane = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
-  const markup = useMemo(() => (result ? previewSvg(result) : ""), [result]);
 
   /** Scale and centre the image so it fills a pane with a small margin. */
   const fit = useCallback(() => {
@@ -206,7 +244,7 @@ export default function CanvasView({ image, result, mode, checkerboard, outlines
   const twoPanes = mode === "side";
   useLayoutEffect(fit, [fit, twoPanes]);
 
-  const common = { image, markup, view, setView, zoomAt, onFit: fit, checkerboard, outlines };
+  const common = { image, ed, showShapes, onPickColor, view, setView, zoomAt, onFit: fit, checkerboard, outlines };
   return (
     <div className="canvas-area">
       <div className="panes">
@@ -219,6 +257,8 @@ export default function CanvasView({ image, result, mode, checkerboard, outlines
           <Pane {...common} kind={mode} paneRef={firstPane} />
         )}
       </div>
+
+      {onPickColor && <div className="pick-banner">Click the picture to pick a color · Esc to cancel</div>}
 
       <div className="zoom-bar" role="toolbar" aria-label="Zoom">
         <button onClick={() => zoomButton(1 / 1.25)} title="Zoom out" aria-label="Zoom out">
