@@ -213,7 +213,6 @@ button.swatch:hover { outline: 2px solid var(--text); outline-offset: 1px; }
 .editor-layer { overflow: visible; }
 .editor-layer.outlines > path[data-shape-id] { fill: transparent; stroke: #c800a8; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
 .editor-layer.show-shapes > path[data-shape-id] { stroke: rgba(0, 0, 0, 0.75); stroke-width: 1px; vector-effect: non-scaling-stroke; }
-.editor-layer > path[data-shape-id]:hover { filter: brightness(1.12); }
 .sel-outline { fill: none; stroke: #00b7ff; stroke-width: 2px; vector-effect: non-scaling-stroke; pointer-events: none; }
 .sel-outline.hit { pointer-events: stroke; stroke-width: 3px; cursor: copy; }
 .sel-box rect, .sel-box line { fill: none; stroke: #00b7ff; stroke-width: 1px; vector-effect: non-scaling-stroke; stroke-dasharray: 4 3; pointer-events: none; }
@@ -248,3 +247,38 @@ button.swatch:hover { outline: 2px solid var(--text); outline-offset: 1px; }
 .chip .link { text-decoration: none; font-size: 15px; }
 .error-text { color: #ffb9a0; }
 @media (max-width: 640px) { .modal-body { flex-direction: column; } .palette-list { width: auto; } }
+
+/* ================= milestone 4: text ================= */
+.segmented.fill { width: 100%; }
+.segmented.fill button { flex: 1; }
+.panel section > .segmented { margin-bottom: 10px; }
+button.wide.first { margin-top: 0; }
+.gap-top { margin-top: 6px; }
+.panel textarea {
+  width: 100%; resize: vertical; font: inherit; font-size: 15px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+}
+.panel section > select { width: 100%; }
+.shape-list.flat { margin-left: 0; }
+.shape-list.flat button { justify-content: flex-start; gap: 8px; align-items: center; padding: 5px 6px; }
+.grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+
+/* text objects on the canvas */
+.text-obj { cursor: pointer; }
+.text-obj.sel { cursor: move; }
+.text-hit { fill: transparent; stroke: none; }
+.text-box { fill: none; stroke: #00b7ff; stroke-width: 1.5px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+.editor-layer.outlines .text-obj path { fill: transparent; stroke: #0a8f3c; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+
+/* box / lasso tool */
+.region-catcher { fill: rgba(0, 183, 255, 0.06); cursor: crosshair; }
+.region-shape { fill: rgba(0, 183, 255, 0.18); stroke: #00b7ff; stroke-width: 2px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+
+/* Google Fonts dialog */
+.modal.narrow { width: min(560px, 100%); }
+.modal-body.column { flex-direction: column; gap: 10px; }
+.modal-body.column > input { font-size: 15px; padding: 8px 10px; }
+.font-results { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.font-results li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.font-results li:last-child { border-bottom: none; }
+.font-results select { flex: none; width: 76px; }

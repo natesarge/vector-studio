@@ -1,5 +1,8 @@
 import { useMemo, useRef, useState } from "react";
 import type { Editor } from "./useEditor";
+import { useFonts } from "../text/fonts";
+import { getLayout, textParts } from "../text/layout";
+import type { Pt } from "../text/lettering";
 import {
   bounds, buildPath, insertNode, parseNodes, rotateAbout, scaleAbout, translate,
   type Matrix, type SubPath,
@@ -11,11 +14,15 @@ interface Props {
   unit: number;
   outlines: boolean;
   showShapes: boolean;
+  /** Called with the outline the user drew with the box/lasso tool. */
+  onRegion: (polygon: Pt[]) => void;
   style?: React.CSSProperties;
 }
 
 type Drag =
   | { kind: "move"; sx: number; sy: number; id: number; moved: boolean; shift: boolean }
+  | { kind: "text"; sx: number; sy: number; id: number; moved: boolean }
+  | { kind: "region"; pts: Pt[] }
   | { kind: "scale"; hx: number; hy: number; free: boolean }
   | { kind: "rotate"; start: number }
   | { kind: "node"; sub: number; idx: number; part: "point" | "in" | "out"; sx: number; sy: number; base: SubPath[] };
@@ -27,7 +34,9 @@ type Drag =
  * Mouse rules: click a shape to select it (Shift adds). Drag a selected shape
  * to move it. Dragging anything else pans the view (handled by the pane).
  */
-export default function EditorLayer({ ed, unit, outlines, showShapes, style }: Props) {
+export default function EditorLayer({ ed, unit, outlines, showShapes, onRegion, style }: Props) {
+  const fonts = useFonts();
+  const [region, setRegion] = useState<Pt[] | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<Drag | null>(null);
   /** Temporary matrix shown while dragging; baked into the paths on release. */
@@ -57,6 +66,19 @@ export default function EditorLayer({ ed, unit, outlines, showShapes, style }: P
     const p = pos(e);
     drag.current = { kind: "move", sx: p.x, sy: p.y, id, moved: false, shift: e.shiftKey };
   };
+  const onTextDown = (e: React.PointerEvent, id: number) => {
+    if (e.button !== 0 || ed.selectedText?.id !== id) return; // unselected: a click selects it (pane)
+    capture(e);
+    const p = pos(e);
+    drag.current = { kind: "text", sx: p.x, sy: p.y, id, moved: false };
+  };
+  const onRegionDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    capture(e);
+    const p = pos(e);
+    drag.current = { kind: "region", pts: [p] };
+    setRegion([p]);
+  };
   const onHandleDown = (e: React.PointerEvent, hx: number, hy: number) => {
     capture(e);
     drag.current = { kind: "scale", hx, hy, free: e.shiftKey };
@@ -79,7 +101,14 @@ export default function EditorLayer({ ed, unit, outlines, showShapes, style }: P
     const g = drag.current;
     if (!g) return;
     const p = pos(e);
-    if (g.kind === "move") {
+    if (g.kind === "region") {
+      // Box: keep the start corner and follow the mouse. Lasso: add points.
+      if (ed.regionTool === "box") {
+        const a = g.pts[0];
+        g.pts = [a, { x: p.x, y: a.y }, p, { x: a.x, y: p.y }];
+      } else g.pts.push(p);
+      setRegion([...g.pts]);
+    } else if (g.kind === "move" || g.kind === "text") {
       const dx = p.x - g.sx, dy = p.y - g.sy;
       if (!g.moved && Math.hypot(dx, dy) < 3 * unit) return; // ignore tiny wobbles when clicking
       g.moved = true;
@@ -122,6 +151,16 @@ export default function EditorLayer({ ed, unit, outlines, showShapes, style }: P
     if (!g) return;
     drag.current = null;
     if (g.kind === "node") return ed.commitPreview();
+    if (g.kind === "region") {
+      setRegion(null);
+      if (g.pts.length >= 3) onRegion(g.pts);
+      return;
+    }
+    if (g.kind === "text") {
+      if (g.moved && live && ed.selectedText) ed.updateText(g.id, { x: ed.selectedText.x + live[4], y: ed.selectedText.y + live[5] });
+      setLive(null);
+      return;
+    }
     if (g.kind === "move" && !g.moved) {
       // A click (no drag) on an already selected shape.
       if (g.shift || e.shiftKey) ed.select([g.id], true);
@@ -180,6 +219,31 @@ export default function EditorLayer({ ed, unit, outlines, showShapes, style }: P
           onPointerDown={(e) => onShapeDown(e, s.id)}
         />
       ))}
+
+      {/* Text objects sit on top of the traced shapes. */}
+      {ed.texts.map((t) => {
+        const entry = fonts.find((f) => f.id === t.fontId);
+        if (!entry) return null; // font still loading
+        const layout = getLayout(t, entry);
+        const isSel = ed.selectedText?.id === t.id;
+        const b = layout.box;
+        return (
+          <g key={"t" + t.id} data-text-id={t.id} className={"text-obj" + (isSel ? " sel" : "")}
+            transform={isSel ? liveAttr : undefined} onPointerDown={(e) => onTextDown(e, t.id)}>
+            {/* An invisible box makes thin or hollow text easy to click. */}
+            <rect className="text-hit" x={b.x} y={b.y} width={b.w} height={b.h} />
+            {textParts(t, layout).map((part, i) => (
+              <path
+                key={i} d={part.d} fill={part.fill} opacity={part.opacity}
+                transform={part.dx || part.dy ? `translate(${part.dx} ${part.dy})` : undefined}
+                stroke={part.stroke} strokeWidth={part.strokeWidth ? part.strokeWidth * 2 : undefined}
+                strokeLinejoin="round" paintOrder="stroke"
+              />
+            ))}
+            {isSel && <rect className="text-box" x={b.x} y={b.y} width={b.w} height={b.h} data-testid="text-box" />}
+          </g>
+        );
+      })}
 
       {/* Selection: an outline around each selected shape. */}
       {ed.selected.map((s) => (
@@ -250,6 +314,16 @@ export default function EditorLayer({ ed, unit, outlines, showShapes, style }: P
             )),
           )}
         </g>
+      )}
+
+      {/* Box / lasso tool for "Replace lettering": catches the mouse over the whole picture. */}
+      {ed.regionTool && (
+        <>
+          <rect className="region-catcher" data-testid="region-catcher" x={0} y={0} width={W} height={H} onPointerDown={onRegionDown} />
+          {region && region.length > 1 && (
+            <polygon className="region-shape" points={region.map((p) => `${p.x},${p.y}`).join(" ")} />
+          )}
+        </>
       )}
     </svg>
   );

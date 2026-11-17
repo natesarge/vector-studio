@@ -3,6 +3,7 @@ import type { SourceImage } from "../lib/loadImage";
 import EditorLayer from "../editor/EditorLayer";
 import type { Editor } from "../editor/useEditor";
 import { rgbToHex } from "../pipeline/color";
+import type { Pt } from "../text/lettering";
 
 export type ViewMode = "original" | "result" | "side" | "slider";
 
@@ -37,6 +38,7 @@ interface PaneProps {
   showShapes: boolean;
   /** When set, the next click picks a colour instead of selecting. */
   onPickColor: ((hex: string) => void) | null;
+  onRegion: (polygon: Pt[]) => void;
   view: View;
   setView: React.Dispatch<React.SetStateAction<View>>;
   zoomAt: (el: HTMLElement, factor: number, cx?: number, cy?: number) => void;
@@ -47,7 +49,7 @@ interface PaneProps {
 }
 
 /** One view of the artwork. Side-by-side mode shows two of these in step. */
-function Pane({ kind, label, image, ed, showShapes, onPickColor, view, setView, zoomAt, onFit, checkerboard, outlines, paneRef }: PaneProps) {
+function Pane({ kind, label, image, ed, showShapes, onPickColor, onRegion, view, setView, zoomAt, onFit, checkerboard, outlines, paneRef }: PaneProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [split, setSplit] = useState(0.5); // slider position, 0..1 across the image
@@ -99,8 +101,10 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, view, setView, 
   };
   const onTap = (target: Element, e: React.PointerEvent) => {
     const shapeEl = target.closest("[data-shape-id]");
+    const textEl = target.closest("[data-text-id]");
     if (onPickColor) {
-      if (shapeEl) return onPickColor(shapeEl.getAttribute("fill")!.toUpperCase());
+      const filled = shapeEl ?? (textEl && target.closest("path"));
+      if (filled) return onPickColor(filled.getAttribute("fill")!.toUpperCase());
       if (target instanceof HTMLCanvasElement) {
         // Read the pixel of the original picture under the mouse.
         const r = target.getBoundingClientRect();
@@ -112,7 +116,8 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, view, setView, 
       return;
     }
     if (kind === "original") return;
-    if (shapeEl) ed.select([Number(shapeEl.getAttribute("data-shape-id"))], e.shiftKey);
+    if (textEl) ed.selectText(Number(textEl.getAttribute("data-text-id")));
+    else if (shapeEl) ed.select([Number(shapeEl.getAttribute("data-shape-id"))], e.shiftKey);
     else if (!target.closest(".handle") && !e.shiftKey) ed.clearSelection();
   };
 
@@ -144,7 +149,7 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, view, setView, 
       onPointerCancel={onPointerUp}
       onDoubleClick={(e) => {
         // Double-click empty space to fit; on a shape it is used for node editing.
-        if (!(e.target as Element).closest("[data-shape-id], .sel-outline, .handle")) onFit();
+        if (!(e.target as Element).closest("[data-shape-id], [data-text-id], .sel-outline, .handle")) onFit();
       }}
     >
       <div
@@ -164,6 +169,7 @@ function Pane({ kind, label, image, ed, showShapes, onPickColor, view, setView, 
             unit={ed.size.width / (image.width * view.scale)}
             outlines={outlines}
             showShapes={showShapes}
+            onRegion={onRegion}
             style={kind === "slider" ? { clipPath: `inset(0 0 0 ${split * 100}%)` } : undefined}
           />
         )}
@@ -202,10 +208,11 @@ interface Props {
   outlines: boolean;
   showShapes: boolean;
   onPickColor: ((hex: string) => void) | null;
+  onRegion: (polygon: Pt[]) => void;
 }
 
 /** The big central area: one or two panes plus the zoom buttons. */
-export default function CanvasView({ image, ed, mode, checkerboard, outlines, showShapes, onPickColor }: Props) {
+export default function CanvasView({ image, ed, mode, checkerboard, outlines, showShapes, onPickColor, onRegion }: Props) {
   const firstPane = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
 
@@ -244,7 +251,7 @@ export default function CanvasView({ image, ed, mode, checkerboard, outlines, sh
   const twoPanes = mode === "side";
   useLayoutEffect(fit, [fit, twoPanes]);
 
-  const common = { image, ed, showShapes, onPickColor, view, setView, zoomAt, onFit: fit, checkerboard, outlines };
+  const common = { image, ed, showShapes, onPickColor, onRegion, view, setView, zoomAt, onFit: fit, checkerboard, outlines };
   return (
     <div className="canvas-area">
       <div className="panes">

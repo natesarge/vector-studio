@@ -10,10 +10,12 @@ interface SliderProps {
   step?: number;
   disabled?: boolean;
   onChange: (v: number) => void;
+  /** Called when the slider is released (mouse up or key up). */
+  onCommit?: () => void;
 }
 
 /** A labelled slider with its current value shown on the right. */
-function Slider({ label, hint, value, min, max, step = 1, disabled, onChange }: SliderProps) {
+export function Slider({ label, hint, value, min, max, step = 1, disabled, onChange, onCommit }: SliderProps) {
   return (
     <label className={"field" + (disabled ? " disabled" : "")} title={hint}>
       <span className="field-head">
@@ -29,6 +31,9 @@ function Slider({ label, hint, value, min, max, step = 1, disabled, onChange }: 
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
+        onPointerUp={onCommit}
+        onKeyUp={onCommit}
+        onBlur={onCommit}
       />
     </label>
   );

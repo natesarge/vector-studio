@@ -4,11 +4,16 @@ import CanvasView, { type ViewMode } from "./ui/CanvasView";
 import CleanupPanel from "./ui/CleanupPanel";
 import EditPanel from "./ui/EditPanel";
 import PaletteManager from "./ui/PaletteManager";
+import TextPanel from "./ui/TextPanel";
+import FontPicker from "./ui/FontPicker";
+import { DEFAULT_FONT, getFont, loadBundledFonts } from "./text/fonts";
+import { defaultText, getLayout, textParts } from "./text/layout";
+import { findLettering, type Pt } from "./text/lettering";
 import { imageFromDataTransfer, loadImage, type SourceImage } from "./lib/loadImage";
 import { usePalettes } from "./lib/palettes";
 import { defaultSettings, type CleanupSettings } from "./pipeline/types";
 import { useVectorizer } from "./pipeline/useVectorizer";
-import { useEditor } from "./editor/useEditor";
+import { newId, useEditor } from "./editor/useEditor";
 import { baseName, downloadText, exportSvg } from "./export/svg";
 
 /** True when the keyboard focus is in a box where typing should not trigger shortcuts. */
@@ -29,6 +34,12 @@ export default function App() {
   const [pick, setPick] = useState<{ use: (hex: string) => void; reopenManager: boolean } | null>(null);
   const pickerRef = useRef<HTMLInputElement>(null);
   const palettes = usePalettes();
+  const [rightTab, setRightTab] = useState<"shapes" | "text">("shapes");
+  const [fontPicker, setFontPicker] = useState(false);
+  const [textNote, setTextNote] = useState<string | null>(null);
+  /** Font used for new text: whatever the user chose last. */
+  const lastFont = useRef(DEFAULT_FONT);
+  useEffect(loadBundledFonts, []);
 
   // The palette only matters to the pipeline while "snap" is on; leaving it
   // out otherwise avoids re-tracing just because a palette was edited.
@@ -83,6 +94,7 @@ export default function App() {
       const ed = edRef.current;
       if (e.key === "Escape") {
         setPick(null);
+        ed.setRegionTool(null);
         if (!isTyping(e.target)) ed.nodeEdit ? ed.setNodeEdit(false) : ed.clearSelection();
         return;
       }
@@ -91,8 +103,8 @@ export default function App() {
       const key = e.key.toLowerCase();
       if (ctrl && key === "z") { e.preventDefault(); e.shiftKey ? ed.redo() : ed.undo(); }
       else if (ctrl && key === "y") { e.preventDefault(); ed.redo(); }
-      else if ((e.key === "Delete" || e.key === "Backspace") && ed.selection.size) { e.preventDefault(); ed.remove(); }
-      else if (e.key.startsWith("Arrow") && ed.selection.size) {
+      else if ((e.key === "Delete" || e.key === "Backspace") && (ed.selection.size || ed.selectedText)) { e.preventDefault(); ed.remove(); }
+      else if (e.key.startsWith("Arrow") && (ed.selection.size || ed.selectedText)) {
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
         ed.nudge(e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0,
@@ -134,6 +146,49 @@ export default function App() {
   const shownError = error ?? (job.error ? "Processing failed: " + job.error : null);
   const hasShapes = ed.shapes.length > 0;
 
+  // ---- text
+  const addText = () => {
+    const { width, height } = ed.size;
+    ed.addText(defaultText(newId(), lastFont.current, width / 2, height / 2, Math.round(width / 10)));
+    if (mode === "original") setMode("result");
+  };
+  /** The user drew a box or lasso: swap the traced lettering inside it for real text. */
+  const replaceLettering = (region: Pt[]) => {
+    ed.setRegionTool(null);
+    const match = findLettering(ed.shapes, region);
+    if (!match) {
+      setTextNote("No complete shapes found inside that area. Draw a slightly larger box around the whole word.");
+      return;
+    }
+    const text = { ...defaultText(newId(), lastFont.current, 0, 0, 100), ...match.fit };
+    ed.setDoc({ shapes: ed.shapes.filter((s) => !match.removeIds.has(s.id)), texts: [...ed.texts, text] });
+    ed.selectText(text.id);
+    setTextNote(`Replaced ${match.removeIds.size} shapes with ${match.layout === "arc" ? "curved" : "straight"} text. Type the wording and pick a font.`);
+  };
+  if (ed.selectedText) lastFont.current = ed.selectedText.fontId;
+  // Selecting a text on the picture brings up its controls.
+  const selectedTextId = ed.selectedText?.id;
+  useEffect(() => {
+    if (selectedTextId !== undefined) setRightTab("text");
+  }, [selectedTextId]);
+
+  const tabs = (
+    <div className="segmented fill" role="tablist" aria-label="Edit panel">
+      <button role="tab" aria-selected={rightTab === "shapes"} className={rightTab === "shapes" ? "on" : ""} onClick={() => setRightTab("shapes")}>
+        Shapes
+      </button>
+      <button role="tab" aria-selected={rightTab === "text"} className={rightTab === "text" ? "on" : ""} onClick={() => setRightTab("text")}>
+        Text
+      </button>
+    </div>
+  );
+  /** Text objects as outline pieces, for export. */
+  const textOutlines = () =>
+    ed.texts.flatMap((t) => {
+      const font = getFont(t.fontId);
+      return font ? [textParts(t, getLayout(t, font))] : [];
+    });
+
   /** Start the eyedropper. The palette dialog hides meanwhile and returns after. */
   const startPick = (use: (hex: string) => void) => {
     setPick({ use, reopenManager: managing });
@@ -174,7 +229,7 @@ export default function App() {
         onOpenFile={(f) => void openFile(f, f.name)}
         onExportSvg={() => {
           if (hasShapes && image)
-            downloadText(baseName(image.name) + ".svg", exportSvg({ ...ed.size, shapes: ed.shapes }), "image/svg+xml");
+            downloadText(baseName(image.name) + ".svg", exportSvg({ ...ed.size, shapes: ed.shapes, texts: textOutlines() }), "image/svg+xml");
         }}
       />
 
@@ -215,8 +270,21 @@ export default function App() {
               outlines={outlines}
               showShapes={showShapes}
               onPickColor={pick ? finishPick : null}
+              onRegion={replaceLettering}
             />
-            <EditPanel ed={ed} palette={palettes.active.colors} onPick={startPick} />
+            {rightTab === "shapes" ? (
+              <EditPanel ed={ed} tabs={tabs} palette={palettes.active.colors} onPick={startPick} />
+            ) : (
+              <TextPanel
+                ed={ed}
+                tabs={tabs}
+                palette={palettes.active.colors}
+                onPick={startPick}
+                onAddText={addText}
+                onGoogleFonts={() => setFontPicker(true)}
+                note={textNote}
+              />
+            )}
           </>
         ) : (
           <div className="empty">
@@ -246,6 +314,17 @@ export default function App() {
         )}
         {dropHover && <div className="drop-overlay">Drop the image to open it</div>}
       </main>
+
+      {fontPicker && (
+        <FontPicker
+          onClose={() => setFontPicker(false)}
+          onAdded={(font) => {
+            if (ed.selectedText) ed.updateText(ed.selectedText.id, { fontId: font.id });
+            lastFont.current = font.id;
+            setFontPicker(false);
+          }}
+        />
+      )}
 
       {managing && (
         <PaletteManager

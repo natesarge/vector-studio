@@ -1,17 +1,18 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { Editor } from "../editor/useEditor";
 import { shapeSize } from "../editor/EditorLayer";
 import ColorPicker from "./ColorPicker";
 
 interface Props {
   ed: Editor;
+  tabs: ReactNode;
   palette: string[];
   /** Start eyedropper mode; `use` receives the picked colour. */
   onPick: (use: (hex: string) => void) => void;
 }
 
 /** Right panel: colours, the selected shape(s), path tools and defect cleanup. */
-export default function EditPanel({ ed, palette, onPick }: Props) {
+export default function EditPanel({ ed, tabs, palette, onPick }: Props) {
   // Which colour group has its picker open. Remembered by shape ids, because
   // the group's colour changes while the user is choosing a new one.
   const [recolor, setRecolor] = useState<{ ids: ReadonlySet<number>; anchor: number } | null>(null);
@@ -30,9 +31,7 @@ export default function EditPanel({ ed, palette, onPick }: Props) {
 
   return (
     <aside className="panel right" aria-label="Edit">
-      <div className="panel-head">
-        <h2>Edit</h2>
-      </div>
+      <div className="panel-head">{tabs}</div>
 
       <div className="panel-body">
         <section>

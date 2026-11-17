@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { TraceResult } from "../pipeline/types";
+import type { TextObj } from "../text/layout";
 import {
   bounds, contains, interiorPoint, measure, parseTranslate, rotateAbout, scaleAbout, simplifyPath,
   smoothPath, transformPath, unionBox, unitePaths, type Box, type Matrix,
@@ -18,18 +19,25 @@ export interface DocShape {
 let nextId = 1;
 export const newId = () => nextId++;
 
+/** Everything that can be edited and undone. */
+export interface Doc {
+  shapes: DocShape[];
+  texts: TextObj[];
+}
+const EMPTY: Doc = { shapes: [], texts: [] };
+
 // ---------------------------------------------------------------- history
 interface History {
-  past: DocShape[][];
-  present: DocShape[];
-  future: DocShape[][];
+  past: Doc[];
+  present: Doc;
+  future: Doc[];
   /** State before the current live preview (slider drag, mouse drag), if any. */
-  base: DocShape[] | null;
+  base: Doc | null;
 }
 type Action =
-  | { type: "reset"; shapes: DocShape[] }
-  | { type: "set"; shapes: DocShape[] }
-  | { type: "preview"; shapes: DocShape[] }
+  | { type: "reset"; doc: Doc }
+  | { type: "set"; doc: Doc }
+  | { type: "preview"; doc: Doc }
   | { type: "commit" }
   | { type: "undo" }
   | { type: "redo" };
@@ -43,14 +51,14 @@ function commit(h: History): History {
 function reduce(h0: History, a: Action): History {
   switch (a.type) {
     case "reset":
-      return { past: [], present: a.shapes, future: [], base: null };
+      return { past: [], present: a.doc, future: [], base: null };
     case "preview":
-      return { ...h0, base: h0.base ?? h0.present, present: a.shapes };
+      return { ...h0, base: h0.base ?? h0.present, present: a.doc };
     case "commit":
       return commit(h0);
     case "set": {
       const h = commit(h0);
-      return { past: [...h.past, h.present].slice(-LIMIT), present: a.shapes, future: [], base: null };
+      return { past: [...h.past, h.present].slice(-LIMIT), present: a.doc, future: [], base: null };
     }
     case "undo": {
       const h = commit(h0);
@@ -73,21 +81,28 @@ export interface ColorGroup {
 export type Editor = ReturnType<typeof useEditor>;
 
 export function useEditor(result: TraceResult | null) {
-  const [h, dispatch] = useReducer(reduce, { past: [], present: [], future: [], base: null });
+  const [h, dispatch] = useReducer(reduce, { past: [], present: EMPTY, future: [], base: null });
   const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
+  const [textId, setTextId] = useState<number | null>(null);
+  /** Active "draw a region" tool for Replace lettering, if any. */
+  const [regionTool, setRegionTool] = useState<"box" | "lasso" | null>(null);
   const [nodeEdit, setNodeEdit] = useState(false);
   const [size, setSize] = useState({ width: 1, height: 1 });
-  const shapes = h.present;
+  const shapes = h.present.shapes;
+  const texts = h.present.texts;
   const edited = h.past.length > 0 || h.base !== null;
   const editedRef = useRef(edited);
   editedRef.current = edited;
+  const textsRef = useRef(texts);
+  textsRef.current = texts;
 
   // A new trace arrived: it becomes the drawing. If the user had already
   // edited shapes, this is recorded as an undo step so nothing is lost.
   useEffect(() => {
     if (!result) {
-      dispatch({ type: "reset", shapes: [] });
+      dispatch({ type: "reset", doc: EMPTY });
       setSelection(new Set());
+      setTextId(null);
       return;
     }
     const fresh = result.shapes.map((s) => {
@@ -95,7 +110,8 @@ export function useEditor(result: TraceResult | null) {
       return { id: newId(), d: m ? transformPath(s.d, m) : s.d, fill: s.fill };
     });
     setSize({ width: result.width, height: result.height });
-    dispatch({ type: editedRef.current ? "set" : "reset", shapes: fresh });
+    // Text objects are kept: they sit on top and do not depend on the trace.
+    dispatch({ type: editedRef.current ? "set" : "reset", doc: { shapes: fresh, texts: textsRef.current } });
     setSelection(new Set());
     setNodeEdit(false);
   }, [result]);
@@ -120,9 +136,11 @@ export function useEditor(result: TraceResult | null) {
     return [...map].map(([fill, ids]) => ({ fill, ids })).sort((a, b) => b.ids.length - a.ids.length);
   }, [shapes]);
 
-  const set = useCallback((next: DocShape[]) => dispatch({ type: "set", shapes: next }), []);
-  const preview = useCallback((next: DocShape[]) => dispatch({ type: "preview", shapes: next }), []);
+  const setDoc = useCallback((doc: Doc) => dispatch({ type: "set", doc }), []);
+  const set = (next: DocShape[]) => dispatch({ type: "set", doc: { shapes: next, texts } });
+  const preview = (next: DocShape[]) => dispatch({ type: "preview", doc: { shapes: next, texts } });
   const commitPreview = useCallback(() => dispatch({ type: "commit" }), []);
+  const selectedText = texts.find((t) => t.id === textId) ?? null;
 
   /** Replace the selected shapes using `fn`; live = preview without an undo step yet. */
   const mapSelected = (fn: (s: DocShape) => DocShape, live = false, from: DocShape[] = shapes) => {
@@ -132,10 +150,11 @@ export function useEditor(result: TraceResult | null) {
 
   // While a slider is being dragged, changes are computed from the shapes as
   // they were when the drag began (otherwise each step would compound).
-  const liveBase = h.base ?? shapes;
+  const liveBase = h.base?.shapes ?? shapes;
 
   const actions = {
     select(ids: Iterable<number>, add = false) {
+      setTextId(null);
       setSelection((sel) => {
         if (!add) return new Set(ids);
         const next = new Set(sel);
@@ -145,7 +164,29 @@ export function useEditor(result: TraceResult | null) {
     },
     clearSelection() {
       setSelection(new Set());
+      setTextId(null);
       setNodeEdit(false);
+    },
+
+    // ---- text objects
+    selectText(id: number | null) {
+      setSelection(new Set());
+      setNodeEdit(false);
+      setTextId(id);
+    },
+    addText(t: TextObj) {
+      dispatch({ type: "set", doc: { shapes, texts: [...texts, t] } });
+      setSelection(new Set());
+      setTextId(t.id);
+    },
+    /** Change the selected text. live = preview (slider being dragged, typing). */
+    updateText(id: number, patch: Partial<TextObj>, live = false) {
+      const next = texts.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      dispatch({ type: live ? "preview" : "set", doc: { shapes, texts: next } });
+    },
+    removeText(id: number) {
+      dispatch({ type: "set", doc: { shapes, texts: texts.filter((t) => t.id !== id) } });
+      setTextId(null);
     },
     undo: () => dispatch({ type: "undo" }),
     redo: () => dispatch({ type: "redo" }),
@@ -182,10 +223,12 @@ export function useEditor(result: TraceResult | null) {
       actions.transform(scaleAbout(factor, factor, b.x + b.w / 2, b.y + b.h / 2));
     },
     nudge(dx: number, dy: number) {
-      actions.transform([1, 0, 0, 1, dx, dy]);
+      if (selectedText) actions.updateText(selectedText.id, { x: selectedText.x + dx, y: selectedText.y + dy });
+      else if (selection.size) actions.transform([1, 0, 0, 1, dx, dy]);
     },
     remove() {
-      if (selection.size) set(shapes.filter((s) => !selection.has(s.id)));
+      if (selectedText) actions.removeText(selectedText.id);
+      else if (selection.size) set(shapes.filter((s) => !selection.has(s.id)));
     },
     /** Move the selection one step up/down the stack, or all the way. */
     reorder(how: "forward" | "backward" | "front" | "back") {
@@ -261,7 +304,8 @@ export function useEditor(result: TraceResult | null) {
   };
 
   return {
-    shapes, size, selection, selected, selectionBox, groups, edited,
+    shapes, texts, size, selection, selected, selectionBox, groups, edited,
+    selectedText, regionTool, setRegionTool, setDoc,
     canUndo: h.past.length > 0 || h.base !== null, canRedo: h.future.length > 0,
     nodeEdit, setNodeEdit, set, preview, commitPreview,
     ...actions,

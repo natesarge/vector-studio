@@ -98,6 +98,19 @@ export function contains(d: string, x: number, y: number): boolean {
   return item(d).contains(new paper.Point(x, y));
 }
 
+/** `n` points spread evenly along each outline of a shape. */
+export function outlinePoints(d: string, n: number): { x: number; y: number }[] {
+  const pts: { x: number; y: number }[] = [];
+  for (const p of item(d).children as paper.Path[]) {
+    const len = p.length;
+    for (let i = 0; i < n; i++) {
+      const q = p.getPointAt((len * i) / n);
+      if (q) pts.push({ x: q.x, y: q.y });
+    }
+  }
+  return pts;
+}
+
 /** A point guaranteed to be inside the shape. */
 export function interiorPoint(d: string): { x: number; y: number } {
   const p = item(d).interiorPoint;

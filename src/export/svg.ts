@@ -1,11 +1,23 @@
 // Building SVG text from the drawing, and saving files from the browser.
+import type { TextPart } from "../text/layout";
 
 /** The minimum needed to write a file: size plus stacked, filled paths. */
 export interface Drawing {
   width: number;
   height: number;
   shapes: { d: string; fill: string }[];
+  /** Text objects, already converted to outline pieces (bottom piece first). */
+  texts?: TextPart[][];
 }
+
+const n2 = (v: number) => Math.round(v * 100) / 100;
+/** One text piece as an SVG <path>. Outlines are drawn behind the fill. */
+export const textPartTag = (p: TextPart) =>
+  `<path d="${p.d}" fill="${p.fill}"` +
+  (p.dx || p.dy ? ` transform="translate(${n2(p.dx)} ${n2(p.dy)})"` : "") +
+  (p.stroke && p.strokeWidth ? ` stroke="${p.stroke}" stroke-width="${n2(p.strokeWidth * 2)}" stroke-linejoin="round" paint-order="stroke"` : "") +
+  (p.opacity !== undefined ? ` opacity="${p.opacity}"` : "") +
+  `/>`;
 
 /**
  * Clean SVG file. Shapes stay in drawing order (later shapes sit on top of
@@ -25,6 +37,13 @@ export function exportSvg(r: Drawing): string {
     lines.push(`  </g>`);
     i = j;
   }
+  // Text is written as plain outlines, so no font is needed to open the file.
+  (r.texts ?? []).forEach((parts, i) => {
+    if (!parts.length) return;
+    lines.push(`  <g id="text-${i + 1}">`);
+    for (const p of parts) lines.push("    " + textPartTag(p));
+    lines.push(`  </g>`);
+  });
   lines.push(`</svg>`, "");
   return lines.join("\n");
 }
