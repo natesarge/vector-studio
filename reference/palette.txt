@@ -1,0 +1,11 @@
+# Brand colors - one hex code per line (text after the code is ignored)
+#EFD8B1 cream
+#EE6A01 flame orange
+#D75019 red-orange
+#F1B034 gold
+#2D2520 charcoal
+#171817 near-black
+#1C4062 navy
+#31546A slate blue
+#143117 forest green
+#73270E rust brown
