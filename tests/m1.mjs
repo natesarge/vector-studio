@@ -31,6 +31,7 @@ await page.screenshot({ path: join(out, "m1-empty.png") });
 const first = join(imgDir, images[0]);
 await page.locator('header input[type="file"]').setInputFiles(first);
 await page.waitForSelector(".artboard canvas");
+await page.getByRole("radio", { name: "Original", exact: true }).click();
 const zoom = () => page.getByTestId("zoom-value").innerText();
 const fitZoom = await zoom();
 assert((await page.locator(".file-label").innerText()).includes(images[0]), "file name shown: " + images[0]);
@@ -47,7 +48,7 @@ const painted = await page.evaluate(() => {
 assert(painted > 50, "canvas has image content");
 
 // 2. Wheel zoom keeps the point under the cursor still.
-const box = await page.locator(".viewport").boundingBox();
+const box = await page.locator(".viewport").first().boundingBox();
 const px = box.x + box.width * 0.6, py = box.y + box.height * 0.4;
 const imgPointAt = (x, y) => page.evaluate(([x, y]) => {
   const r = document.querySelector(".artboard").getBoundingClientRect();
@@ -62,9 +63,9 @@ assert(await zoom() !== fitZoom, `wheel zoom changed ${fitZoom} -> ${await zoom(
 assert(Math.hypot(before[0] - after[0], before[1] - after[1]) < 0.002, "zoom is anchored at the cursor");
 
 // 3. Drag pans by the same distance as the mouse.
-const r0 = await page.locator(".artboard").boundingBox();
+const r0 = await page.locator(".artboard").first().boundingBox();
 await page.mouse.down(); await page.mouse.move(px + 120, py + 70, { steps: 5 }); await page.mouse.up();
-const r1 = await page.locator(".artboard").boundingBox();
+const r1 = await page.locator(".artboard").first().boundingBox();
 assert(Math.abs(r1.x - r0.x - 120) < 1 && Math.abs(r1.y - r0.y - 70) < 1, "drag pans the image");
 await page.screenshot({ path: join(out, "m1-zoomed.png") });
 
